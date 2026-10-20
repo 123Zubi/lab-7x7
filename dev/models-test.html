@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brautpaar 3D – Test</title>
+<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; }
+  #ui { position: fixed; left: 0; right: 0; bottom: 12px; display: flex; gap: 8px; justify-content: center; z-index: 10; }
+  #ui button { font: 600 16px system-ui; padding: 10px 18px; border: 0; border-radius: 22px; background: #fff; color: #333; box-shadow: 0 2px 8px #0003; }
+  #ui button.on { background: #c0392b; color: #fff; }
+</style>
+</head>
+<body>
+<a-scene background="color: #cfe8f7" vr-mode-ui="enabled: false">
+  <a-entity light="type: ambient; color: #fff; intensity: 0.8"></a-entity>
+  <a-entity light="type: directional; color: #fff; intensity: 1.1" position="2 4 3"></a-entity>
+  <a-entity light="type: directional; color: #ffd9e6; intensity: 0.3" position="-3 2 -2"></a-entity>
+
+  <!-- Bodenplatte -->
+  <a-cylinder position="0 -0.06 0" radius="1" height="0.12" color="#8fcf8a" segments-radial="24" material="flatShading: true"></a-cylinder>
+  <a-cylinder position="0 -0.14 0" radius="1.05" height="0.05" color="#9b6a3f" segments-radial="24" material="flatShading: true"></a-cylinder>
+
+  <a-entity id="paar" couple="anim: idle"></a-entity>
+
+  <a-entity id="rig" position="0 0.55 0">
+    <a-entity camera look-controls="enabled: false" position="0 0.1 1.7"></a-entity>
+  </a-entity>
+</a-scene>
+
+<div id="ui">
+  <button data-a="idle" class="on">idle</button>
+  <button data-a="walk">walk</button>
+  <button data-a="cheer">cheer</button>
+  <button id="spin" class="on">drehen</button>
+</div>
+
+<script type="module">
+  import { registerCouple } from '../js/couple3d.js';
+  registerCouple(window.AFRAME); // idempotent
+
+  // Mini-Orbit: Kamera-Rig schwenkt leicht hin und her; Ziehen mit Maus/Finger dreht manuell.
+  const q = new URLSearchParams(location.search);   // ?angle=0&spin=0 fuer feste Ansicht
+  let angle = +(q.get('angle') ?? 0.35), drag = null, spin = q.get('spin') !== '0';
+  if (!spin) document.querySelector('#spin').classList.remove('on');
+  AFRAME.registerComponent('mini-orbit', {
+    tick(t) { this.el.object3D.rotation.y = spin && drag == null ? angle + Math.sin(t / 2500) * 0.6 : angle; }
+  });
+  document.querySelector('#rig').setAttribute('mini-orbit', '');
+  addEventListener('pointerdown', e => { if (!e.target.closest('#ui')) drag = e.clientX; });
+  addEventListener('pointermove', e => { if (drag != null) { angle -= (e.clientX - drag) * 0.008; drag = e.clientX; } });
+  addEventListener('pointerup', () => { drag = null; });
+
+  const btns = document.querySelectorAll('#ui button[data-a]');
+  btns.forEach(b => b.addEventListener('click', () => {
+    document.querySelector('#paar').components.couple.play(b.dataset.a);
+    btns.forEach(x => x.classList.toggle('on', x === b));
+  }));
+  document.querySelector('#spin').addEventListener('click', e => {
+    spin = !spin; e.currentTarget.classList.toggle('on', spin);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#050b2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Für Marc &amp; Fiona</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%8D%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<main id="app">
+
+  <!-- Startbildschirm -->
+  <section id="screen-start" class="screen start" hidden>
+    <div class="sparkles" aria-hidden="true"></div>
+    <div class="start-inner">
+      <svg class="rings" viewBox="0 0 120 70" aria-hidden="true">
+        <circle cx="45" cy="38" r="22" fill="none" stroke="#f5c542" stroke-width="6"/>
+        <circle cx="75" cy="38" r="22" fill="none" stroke="#ffe08a" stroke-width="6"/>
+        <path d="M45 16 L52 6 L60 16 L68 6 L75 16" fill="none" stroke="#fff" stroke-width="2.500" stroke-linejoin="round" opacity=".9"/>
+      </svg>
+      <p class="eyebrow">Ein Hochzeitsgeschenk</p>
+      <h1 class="title"><small>Für</small>Marc &amp; Fiona</h1>
+      <p class="subtitle">Das Hochzeits-Labyrinth</p>
+      <div id="start-couple" class="start-couple"></div>
+      <p class="lead">Vier Rätsel, vier Schätze – und am Ende wartet ein großer Gewinn.</p>
+      <p id="inapp-note" class="notice" role="note" hidden>Bitte im normalen Safari/Chrome öffnen, nicht in WhatsApp/Instagram – dort ist die Kamera oft blockiert.</p>
+      <div class="start-btns">
+        <button id="btn-ar" class="btn btn-gold"><span aria-hidden="true">📷 </span>Mit Kamera spielen (AR)</button>
+        <button id="btn-plain" class="btn btn-ghost">Ohne Kamera spielen</button>
+      </div>
+      <p class="fine">Haltet das Spielbrett bereit.</p>
+    </div>
+  </section>
+
+  <!-- Spiel -->
+  <section id="screen-game" class="screen game" hidden>
+    <header class="hud">
+      <div class="hud-title">Marc &amp; Fiona</div>
+      <ol id="pips" class="pips" aria-label="Fortschritt"></ol>
+      <button id="btn-sound" class="icon-btn" aria-label="Ton an oder aus">🔊</button>
+    </header>
+    <div id="stage"></div>
+    <div id="hint" class="chip" hidden>Tipp: Dreht das Brett so, dass Rot oben links liegt – wie auf dem Bild.</div>
+    <div id="panel" class="panel" hidden></div>
+    <details id="debug" class="debug" hidden>
+      <summary>Debug</summary>
+      <div id="debug-btns"></div>
+    </details>
+  </section>
+
+  <!-- Abschluss -->
+  <section id="screen-end" class="screen end" hidden>
+    <div class="sparkles" aria-hidden="true"></div>
+    <div class="start-inner">
+      <p class="eyebrow">Geschafft!</p>
+      <h1 class="title end-title">Alle Schätze gefunden</h1>
+      <div id="end-couple" class="start-couple cheer"></div>
+      <ul id="end-list" class="prizes"></ul>
+      <p class="total">Gesamt: <strong id="end-total">300 €</strong></p>
+      <p class="lead">Alles Liebe zur Hochzeit, Marc &amp; Fiona!</p>
+    </div>
+  </section>
+
+  <div id="loading" class="overlay" hidden>
+    <div class="modal-card"><div class="spinner" aria-hidden="true"></div><p id="loading-text">Kamera wird gestartet …</p>
+      <button id="btn-cancel-ar" class="btn btn-ghost">Lieber ohne Kamera</button></div>
+  </div>
+  <div id="modal" class="overlay" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+</main>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
