@@ -1,5 +1,5 @@
 // Quiz im Millionär-Stil (eigenes Design). Regeln: Plan §8.
-// Falsch → rot + deaktiviert; nach 2 Falschen → Backup-Frage (dort Falsche nur deaktivieren).
+// Falsch → rot + deaktiviert; nach 2 Falschen → Backup-Frage (dort Falsche nur ausgegraut, ohne Rot).
 // Joker 50:50 und Publikum je einmal pro Spiel (Zustand in state.jokers).
 import { STATIONS, DOTS, LETTERS } from './content.js';
 import { state, save } from './state.js';
@@ -8,15 +8,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
 const HINT = 'Antwort antippen – oder den Farbpunkt auf dem Brett.';
 const WRONG = 'Leider nicht, versucht es nochmal!';
+const SOFT = 'Nicht ganz – nehmt eine andere Antwort.'; // Backup-Frage: sanft, ohne Rot
 
 export function createQuiz({ root, modal, stage, sound }) {
   let idx = 0, active = false, busy = false, done = null, shownAt = 0;
   const early = () => performance.now() - shownAt < 400; // Klicksperre nach render: Doppeltipp auf „Zur Frage“ darf keinen Joker treffen
   const cur = () => (state.usingBackup ? STATIONS[idx].backup : STATIONS[idx].question);
   const btns = () => [...root.querySelectorAll('.ans')];
+  const wrongMsg = () => (state.usingBackup ? [SOFT, 'soft'] : [WRONG, 'bad']);
   const say = (t, cls = '') => { const m = root.querySelector('.q-msg'); if (m) { m.textContent = t; m.className = 'q-msg ' + cls; } };
 
   function render() {
+    root.hidden = false; // zentral: auch nach Reload mitten in der Frage (Sprechblase übersprungen) muss das Panel sichtbar sein
     shownAt = performance.now();
     const q = cur(), S = STATIONS[idx];
     root.innerHTML = `<div class="quiz">
@@ -29,13 +32,14 @@ export function createQuiz({ root, modal, stage, sound }) {
     root.querySelector('[data-j=fifty]').onclick = fifty;
     root.querySelector('[data-j=audience]').onclick = audience;
     paint();
-    say(state.wrong.length ? WRONG : HINT);
+    say(...(state.wrong.length ? wrongMsg() : [HINT]));
   }
 
   function paint() {
     btns().forEach((b, i) => {
       const w = state.wrong.includes(i), g = state.gone.includes(i);
-      b.classList.toggle('wrong', w);
+      b.classList.toggle('wrong', w && !state.usingBackup);
+      b.classList.toggle('off', w && state.usingBackup);
       b.classList.toggle('gone', g);
       b.disabled = w || g;
       b.setAttribute('aria-hidden', g ? 'true' : 'false');
@@ -79,7 +83,7 @@ export function createQuiz({ root, modal, stage, sound }) {
       return;
     }
     save(); paint();
-    say(WRONG, 'bad');
+    say(...wrongMsg());
     busy = false;
   }
 

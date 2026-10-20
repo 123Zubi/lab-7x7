@@ -161,10 +161,9 @@ export async function createFallbackStage(container) {
       for (let k = 0; k < 8; k++) { const s = el('span', 'spark'); s.style.setProperty('--a', k * 45 + 'deg'); chest.append(s); }
       at(chest, [r, c]);
       layer.append(chest);
-      // Paar tritt einen Schritt Richtung Brettmitte zur Seite, damit die Truhe sichtbar bleibt
-      const dr = 4 - cur[0], dc = 4 - cur[1];
-      // Figuren sind ~1,5 Felder hoch und ~1,45 breit: Abstand so wählen, dass sie die Truhe nicht überdecken
-      const [ax, ay] = Math.abs(dr) > Math.abs(dc) ? [0, dr > 0 ? 2 : -1] : dc ? [Math.sign(dc) * 1.5, 0] : [0, 2];
+      // Paar bleibt auf seinem Feld (Gang), nur leicht Richtung Brettmitte versetzt; die Truhe (z-index darüber) bleibt sichtbar
+      const dc = Math.sign(4 - cur[1]) || 1;
+      const [ax, ay] = [dc * 0.5, 0.3];
       coupleIn.style.setProperty('--ax', ax); coupleIn.style.setProperty('--ay', ay);
     },
     hideChest,

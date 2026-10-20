@@ -131,7 +131,7 @@ function toast(msg) {
   const t = $('#toast');
   t.textContent = msg; t.hidden = false;
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => (t.hidden = true), 6000);
+  toast.t = setTimeout(() => (t.hidden = true), 5000);
 }
 
 const named = (name, msg = name) => Object.assign(new Error(msg), { name });
@@ -261,6 +261,7 @@ async function startGame(mode) {
 function setupDebug() {
   const d = $('#debug');
   d.hidden = false;
+  document.body.classList.add('debug-on'); // Brett-Tipp rutscht unter den Debug-Aufklapper
   $('#debug-btns').innerHTML = ['Start', 'S1', 'S2', 'S3', 'S4', 'Ziel', 'Ende'].map((l, n) => `<button data-n="${n}">${l}</button>`).join('') + '<button data-n="x">Reset</button>';
   $('#debug-btns').onclick = (e) => {
     const n = e.target.dataset && e.target.dataset.n;
