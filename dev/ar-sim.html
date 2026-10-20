@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AR-Simulation (ohne Kamera)</title>
+<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #222; }
+  #ui { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  #ui button { font: 600 14px system-ui; padding: 8px 12px; border: 0; border-radius: 18px; background: #fff; color: #222; box-shadow: 0 2px 6px #0004; }
+  #ui label { color: #fff; align-self: center; }
+  #log { position: fixed; top: 8px; left: 8px; z-index: 10; color: #fff; background: #0009; padding: 6px 10px; border-radius: 8px; white-space: pre; }
+</style>
+</head>
+<body>
+<!-- Brett liegt flach (Zielebene x/y → Welt x/−z), Kamera schaut schräg von oben: wie MindAR, nur ohne Tracking. -->
+<a-scene embedded style="position:fixed;inset:0" light="defaultLightsEnabled: false" background="color: #3a2a1c" vr-mode-ui="enabled: false">
+  <a-entity id="cam" camera="fov: 50" position="0 0.62 0.68" rotation="-42 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-entity>
+  <a-entity id="target" rotation="-90 0 0">
+    <a-plane id="img" width="1" height="1" material="shader: flat"></a-plane>
+  </a-entity>
+</a-scene>
+<div id="log">lade …</div>
+<div id="ui">
+  <button data-w="0">1</button><button data-w="1">2</button><button data-w="2">3</button><button data-w="3">4</button><button data-w="4">5 Ziel</button>
+  <label><input type="checkbox" id="instant"> instant</label>
+  <button id="cheer">cheer</button><button id="chest">chest</button><button id="dots">dots</button>
+  <button data-v="schraeg">schräg</button><button data-v="oben">oben</button><button data-v="flach">flach</button>
+</div>
+<script type="module">
+  import { buildBoard } from '../js/ar.js';
+  import { STATIONS, FINALE, DOTS } from '../js/content.js';
+  const q = new URLSearchParams(location.search);
+  const src = q.get('img') === 'board' ? '../assets/board.jpg' : '../assets/target.jpg';
+  const sceneEl = document.querySelector('a-scene');
+  const log = (t) => (document.querySelector('#log').textContent = t);
+  if (!sceneEl.hasLoaded) await new Promise((r) => sceneEl.addEventListener('loaded', r, { once: true }));
+  const img = new Image(); img.src = src; await img.decode();
+  const aspect = img.naturalHeight / img.naturalWidth;
+  document.querySelector('#img').setAttribute('height', aspect);
+  document.querySelector('#img').setAttribute('material', 'src', src);
+  const stage = await buildBoard({ sceneEl, anchor: document.querySelector('#target').object3D, aspect, debug: q.get('debug') === '1' });
+  window.stage = stage;
+  const STOPS = [...STATIONS.map((s) => s.pos), FINALE.pos];
+  let cur = -1, dot = -1;
+  stage.onDotTap((c) => log('Tipp: ' + c));
+  log('bereit – ' + src);
+  document.querySelectorAll('[data-w]').forEach((b) => (b.onclick = async () => {
+    const i = +b.dataset.w, t0 = performance.now();
+    log(`walkTo(${i}) läuft …`);
+    await stage.walkTo(i, { instant: document.querySelector('#instant').checked });
+    cur = i;
+    log(`walkTo(${i}) fertig nach ${((performance.now() - t0) / 1000).toFixed(1)} s → Feld ${STOPS[i]}`);
+  }));
+  document.querySelector('#cheer').onclick = () => stage.cheer();
+  document.querySelector('#chest').onclick = () => stage.showChest(...STOPS[Math.max(0, cur)]);
+  document.querySelector('#dots').onclick = () => {
+    dot = dot >= 3 ? -1 : dot + 1;
+    stage.highlightDot(dot < 0 ? null : DOTS[dot].color);
+    log('highlightDot(' + (dot < 0 ? 'null' : DOTS[dot].color) + ')');
+  };
+  const VIEWS = { schraeg: ['0 0.62 0.68', '-42 0 0'], oben: ['0 1.2 0', '-90 0 0'], flach: ['0 0.12 0.75', '-8 0 0'] };
+  document.querySelectorAll('[data-v]').forEach((b) => (b.onclick = () => {
+    const [p, r] = VIEWS[b.dataset.v];
+    document.querySelector('#cam').setAttribute('position', p);
+    document.querySelector('#cam').setAttribute('rotation', r);
+  }));
+  if (q.get('view')) document.querySelector(`[data-v="${q.get('view')}"]`).click();
+</script>
+</body>
+</html>

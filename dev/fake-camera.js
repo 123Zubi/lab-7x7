@@ -18,8 +18,7 @@ export async function install(src, { width = 720, height = 1280, wobble = 0.006 
     g.drawImage(img, (-img.width * s) / 2, (-img.height * s) / 2, img.width * s, img.height * s);
     requestAnimationFrame(draw);
   })();
-  const stream = cv.captureStream(30);
   navigator.mediaDevices.getUserMedia = async () => cv.captureStream(30);
-  window.__fakeCam = { canvas: cv, stream };
+  window.__fakeCam = cv;
   return cv;
 }
