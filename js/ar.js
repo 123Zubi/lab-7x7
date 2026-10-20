@@ -35,12 +35,21 @@ export function stopIndices(route, stops) {
   });
 }
 
+const named = (name, msg) => Object.assign(new Error(msg), { name });
 const loadScript = (src) => new Promise((res, rej) => {
   const s = document.createElement('script');
   s.src = src; s.onload = res;
-  s.onerror = () => rej(new Error('Skript nicht ladbar: ' + src));
+  s.onerror = () => rej(named('CdnError', 'Skript nicht ladbar: ' + src));
   document.head.append(s);
 });
+const gum = () => navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+/** Lädt das Bildziel vorab: fehlt es oder ist es kaputt, sofort ein benannter Fehler statt langem Warten. */
+async function checkTargets(src) {
+  let b = null;
+  try { const r = await fetch(src); if (r.ok) b = new Uint8Array(await r.arrayBuffer()); } catch { /* offline o. ä. */ }
+  // .mind = msgpack-Map {v, dataList}: erstes Byte 0x80–0x8f
+  if (!b || b.length < 1000 || (b[0] & 0xf0) !== 0x80) throw named('TargetError', 'Bildziel fehlt oder ist kaputt: ' + src);
+}
 const once = (el, ev) => new Promise((res) => el.addEventListener(ev, res, { once: true }));
 const clamp01 = (k) => Math.min(1, Math.max(0, k));
 const smooth = (k) => { k = clamp01(k); return k * k * (3 - 2 * k); };
@@ -113,7 +122,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     const lit = new THREE.Group();
     lit.add(glow, ring);
     lit.visible = false;
-    const hit = new THREE.Mesh(new THREE.CircleGeometry(cell * 0.45, 24), new THREE.MeshBasicMaterial({ visible: false }));
+    const hit = new THREE.Mesh(new THREE.CircleGeometry(cell * 0.6, 24), new THREE.MeshBasicMaterial({ visible: false }));
     hit.userData.color = d.color;
     g.add(lit, hit);
     if (debug) {   // virtueller Punkt: muss genau auf dem echten liegen
@@ -209,9 +218,19 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     if (!pts.length) return Promise.resolve();
     setAnim('walk');
     return new Promise((res) => {
-      move = { pts, k: 0, t: 0, step, from: pos.clone(), done: () => { move = null; setAnim('idle'); res(); } };
+      // Sicherheitsnetz: im Hintergrund/bei Bildschirmsperre läuft rAF nicht – spätestens nach Dauer + 2 s ist der Weg fertig
+      const tm = setTimeout(finishMove, (pts.length * step + 2) * 1000);
+      move = { pts, k: 0, t: 0, step, from: pos.clone(), done: () => { clearTimeout(tm); move = null; setAnim('idle'); res(); } };
     });
   }
+  function finishMove() {
+    if (!move) return;
+    pos.copy(move.pts[move.pts.length - 1]);
+    move.done();
+    faceCamera();
+  }
+  const onHide = () => document.hidden && finishMove();
+  document.addEventListener('visibilitychange', onHide);
   function frame(now) {
     const dt = Math.min(0.25, (now - last) / 1000);
     last = now; time += dt;
@@ -298,6 +317,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
       cancelAnimationFrame(raf);
       clearTimeout(cheerT);
       if (move) move.done();
+      document.removeEventListener('visibilitychange', onHide);
       sceneEl.canvas && sceneEl.canvas.removeEventListener('click', onTap);
       anchor.remove(root);
       coupleEl.remove();
@@ -341,34 +361,60 @@ const STYLE = `
 .ar-scan{position:absolute;inset:0;z-index:3;pointer-events:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .3s}
 .ar-scan[hidden]{display:flex;opacity:0}
 .ar-scan .ar-frame{width:min(68vw,52vh);aspect-ratio:1;border:3px dashed rgba(245,197,66,.9);border-radius:18px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);animation:ar-pulse 1.6s ease-in-out infinite}
+.ar-scan[hidden] .ar-frame{animation:none}
 .ar-scan .ar-msg{max-width:84%;padding:10px 16px;border-radius:14px;background:rgba(5,11,46,.88);border:1px solid #f5c542;color:#fff8e7;font:600 16px/1.35 system-ui,sans-serif;text-align:center}
 .ar-scan .ar-msg small{display:block;font-weight:400;font-size:13px;opacity:.9;margin-top:4px}
 .ar-scan.lost .ar-frame{display:none}
 .ar-scan.lost{justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 64px)}
+.ar-rot{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(5,11,46,.94);color:#fff8e7;font:600 20px/1.4 system-ui,sans-serif;text-align:center}
+@media (orientation:landscape) and (max-height:500px){.ar-rot{display:flex}}
 @keyframes ar-pulse{50%{transform:scale(.97);opacity:.75}}
 @media (prefers-reduced-motion:reduce){.ar-scan .ar-frame{animation:none}}`;
 
-/** Startet Kamera + MindAR in `container`. Wirft bei verweigerter/fehlender Kamera (main.js → Fallback). */
-export async function createArStage(container) {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw Object.assign(new Error('Kamera-API nicht verfügbar'), { name: 'NotSupportedError' });
-  }
-  // Zuerst selbst nach der Kamera fragen: MindAR verschluckt den Fehlernamen (NotAllowedError) sonst.
-  const probe = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
-  probe.getTracks().forEach((t) => t.stop());
-
-  if (!window.AFRAME) await loadScript(AFRAME_SRC);
-  if (!window.AFRAME.components['mindar-image']) await loadScript(MINDAR_SRC);
-
+/**
+ * Startet Kamera + MindAR in `container`. Wirft benannte Fehler (main.js → Fallback mit passendem Toast):
+ * NotAllowedError/NotFoundError/… (Kamera), CdnError (Skripte), TargetError (targets.mind), ArError, Cancelled.
+ * onPhase('loading'|'permission'|'starting'|'ready'): Fortschritt, damit main.js die Zeit im Kamera-Dialog nicht mitzählt.
+ * onFatal(err): Kamera nach dem Start endgültig weg (Neustart gescheitert) → main.js wechselt in den Fallback.
+ */
+export async function createArStage(container, { onPhase = () => {}, onFatal = () => {} } = {}) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw named('NotSupportedError', 'Kamera-API nicht verfügbar');
   const q = new URLSearchParams(location.search);
   const debug = q.get('debug') === '1';
+  const targetSrc = (debug && q.get('target')) || 'targets.mind';             // ?debug=1&target=… nur zum Testen (z. B. 404)
   const minCF = +(q.get('mincf') || 0.0001), beta = +(q.get('beta') || 0.001);   // Glättung, am Brett tunebar
-  const aspect = await new Promise((res) => {
-    const i = new Image();
-    i.onload = () => res(i.naturalHeight / i.naturalWidth || 1);
-    i.onerror = () => res(1);
-    i.src = 'assets/target.jpg';
-  });
+
+  // Bildschirm wach halten (Publikumsjoker 30 s ≙ Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
+  let destroyed = false, wl = null, wlBusy = false;
+  const lockScreen = () => {
+    if (destroyed || wlBusy || document.hidden || (wl && !wl.released) || !navigator.wakeLock) return;
+    wlBusy = true;
+    navigator.wakeLock.request('screen').then((l) => { if (destroyed) l.release(); else wl = l; }, () => {}).finally(() => (wlBusy = false));
+  };
+  lockScreen();
+  const bail = (e) => { destroyed = true; if (wl) wl.release().catch(() => {}); throw e; };   // Fehler vor dem Szenenaufbau
+
+  onPhase('loading');
+  // Erst alles laden, was ohne Kamera geht. Danach genau EIN getUserMedia, dessen Stream MindAR direkt übernimmt
+  // (kein zweiter Kamera-Dialog auf iOS, keine Lücke, echte Fehlernamen statt MindARs „VIDEO_FAIL“).
+  const [aspect] = await Promise.all([
+    new Promise((res) => {
+      const i = new Image();
+      i.onload = () => res(i.naturalHeight / i.naturalWidth || 1);
+      i.onerror = () => res(1);
+      i.src = 'assets/target.jpg';
+    }),
+    (async () => {
+      if (!window.AFRAME) await loadScript(AFRAME_SRC);
+      if (!window.AFRAME.components['mindar-image']) await loadScript(MINDAR_SRC);
+    })(),
+    checkTargets(targetSrc),
+  ]).catch(bail);
+  if (!container.isConnected) bail(named('Cancelled', 'abgebrochen'));
+  onPhase('permission');
+  let cam = await gum().catch(bail);
+  if (!container.isConnected) { cam.getTracks().forEach((t) => t.stop()); bail(named('Cancelled', 'abgebrochen')); }
+  onPhase('starting');
 
   if (!document.getElementById('ar-style')) {
     const st = document.createElement('style');
@@ -379,8 +425,8 @@ export async function createArStage(container) {
   container.classList.add('ar-host');
   container.insertAdjacentHTML('beforeend', `
 <a-scene embedded light="defaultLightsEnabled: false" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false"
-  renderer="antialias: true; alpha: true; colorManagement: true"
-  mindar-image="imageTargetSrc: targets.mind; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: ${minCF}; filterBeta: ${beta}; missTolerance: 10; warmupTolerance: 4">
+  renderer="antialias: true; alpha: true"
+  mindar-image="imageTargetSrc: ${targetSrc}; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: ${minCF}; filterBeta: ${beta}; missTolerance: 10; warmupTolerance: 4">
   <a-camera position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
   <a-entity id="ar-target" mindar-image-target="targetIndex: 0"></a-entity>
 </a-scene>
@@ -390,36 +436,182 @@ export async function createArStage(container) {
   const targetEl = container.querySelector('#ar-target');
   const scan = container.querySelector('.ar-scan');
   const msg = scan.querySelector('.ar-msg');
+  const rot = Object.assign(document.createElement('div'), { className: 'ar-rot', textContent: '📱 Bitte im Hochformat spielen' });
+  document.body.append(rot);   // ausserhalb des Hosts: muss auch über dem Quiz-Panel liegen
 
-  let tracking = false, stage = null;
+  let tracking = false, stage = null, iv = 0, live = false, restarting = false, fatalSent = false, visT = 0, rotT = 0;
+  // Gleich anhängen: ein früher targetFound (vor dem Ende von buildBoard) darf nicht verloren gehen
+  targetEl.addEventListener('targetFound', () => { tracking = true; scan.hidden = true; });
+  const showLost = () => {
+    scan.classList.add('lost');
+    msg.innerHTML = 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
+    scan.hidden = false;
+  };
+  targetEl.addEventListener('targetLost', () => { tracking = false; showLost(); });
+
+  const sys = () => (sceneEl.systems && sceneEl.systems['mindar-image-system']) || {};
+  const stopCam = () => {
+    const v = sys().video;
+    for (const s of [cam, v && v.srcObject]) if (s) s.getTracks().forEach((t) => t.stop());
+  };
+  const camDead = () => {
+    const v = sys().video, s = v && v.srcObject;
+    return !s || s.getVideoTracks().some((t) => t.readyState === 'ended');
+  };
+  const fatal = (e) => {
+    if (destroyed || fatalSent) return;
+    fatalSent = true;
+    console.warn('AR-Kamera ausgefallen:', e);
+    onFatal(e);
+  };
+  const onEnded = () => { if (live && !document.hidden) restartCam(); };   // versteckt: übernimmt onVis
+
+  // MindAR 1.2.5 anpassen (nur dieses System-Objekt): eigener Stream statt eigenem getUserMedia, robustes stop(),
+  // kein Start/keine Schleife mehr nach destroy, resize-Handler nach destroy wirkungslos.
+  const S = sys();
+  if (S._startAR && S._startVideo) {
+    const start0 = S._startAR, resize0 = S._resize;
+    S._startVideo = function () {
+      const v = (this.video = document.createElement('video'));
+      for (const a of ['autoplay', 'muted', 'playsinline']) v.setAttribute(a, '');
+      v.muted = true;
+      v.style.cssText = 'position:absolute;top:0;left:0;z-index:-2';
+      this.container.appendChild(v);
+      v.addEventListener('loadedmetadata', () => {
+        v.setAttribute('width', v.videoWidth);
+        v.setAttribute('height', v.videoHeight);
+        this._startAR();
+      }, { once: true });
+      v.srcObject = cam;
+      cam.getVideoTracks().forEach((t) => t.addEventListener('ended', onEnded));
+    };
+    S.stop = function () {
+      const c = this.controller, v = this.video;
+      this.controller = null;
+      if (c) { c.stopProcessVideo(); try { c.dispose(); } catch { /* Worker schon weg */ } }
+      stopCam();
+      if (v) { v.pause(); v.srcObject = null; v.remove(); }
+    };
+    S._startAR = function () {
+      if (destroyed || !sceneEl.isConnected) return stopCam();
+      // destroy während des Starts: nach dem Start sofort wieder stoppen, damit keine TF.js-Schleife weiterläuft
+      return start0.call(this).then(() => { if (destroyed || !sceneEl.isConnected) this.stop(); }, (e) => {
+        if (destroyed || !sceneEl.isConnected) return;   // abgebrochen: stop() hat den Controller schon entsorgt
+        console.warn('MindAR-Start fehlgeschlagen:', e);
+        this.el.emit('arError', { error: String(e && e.message || e) });
+      });
+    };
+    // ponytail: jeder (Neu-)Start hängt einen weiteren gebundenen resize-Listener an (MindAR entfernt ihn nie); dank Guard harmlos
+    S._resize = function () {
+      if (destroyed || !this.controller || !this.video || !this.container || !this.container.isConnected) return;
+      resize0.call(this);
+    };
+  }
+
+  /** Kamera neu starten (Track beendet, Video-Masse geändert). Spielzustand bleibt; scheitert es → onFatal. */
+  async function restartCam() {
+    if (destroyed || restarting || !live || document.hidden) return;
+    restarting = true;
+    const tc = targetEl.components['mindar-image-target'];
+    if (targetEl.object3D.visible && tc) tc.updateWorldMatrix(null);   // altes Bild nicht stehen lassen
+    scan.classList.remove('lost');
+    msg.innerHTML = 'Kamera startet neu …<small>Haltet die Kamera aufs Brett</small>';
+    scan.hidden = false;
+    try {
+      sys().stop();
+      cam = await gum();
+      if (destroyed) return stopCam();
+      await new Promise((res, rej) => {
+        const done = (err) => {
+          clearTimeout(t);
+          sceneEl.removeEventListener('arReady', ok);
+          sceneEl.removeEventListener('arError', bad);
+          err ? rej(err) : res();
+        };
+        const ok = () => done(), bad = (e) => done(named('ArError', 'MindAR: ' + (e.detail && e.detail.error)));
+        const t = setTimeout(() => done(named('Timeout', 'Kamera-Neustart dauert zu lange')), 20000);
+        sceneEl.addEventListener('arReady', ok);
+        sceneEl.addEventListener('arError', bad);
+        sys().start();
+      });
+      if (!tracking) showLost();
+    } catch (e) {
+      fatal(e);
+    } finally {
+      restarting = false;
+    }
+  }
+
+  // Zurück aus Hintergrund/Sperre: Wake Lock neu, Video weiterspielen, tote/stumme Kamera neu starten
+  const onVis = () => {
+    if (document.hidden || destroyed) return;
+    lockScreen();
+    if (!live) return;
+    if (camDead()) return restartCam();
+    const v = sys().video;
+    v.play().catch(() => {});
+    clearTimeout(visT);
+    visT = setTimeout(() => {
+      const w = sys().video, s = w && w.srcObject;
+      if (camDead() || w.paused || (s && s.getVideoTracks().some((t) => t.muted))) restartCam();
+    }, 2500);
+  };
+  // Zurück ins Hochformat: haben sich die Videomasse geändert, passt MindARs Eingabegrösse nicht mehr → Neustart
+  const portrait = matchMedia('(orientation: portrait)');
+  const onOrient = () => {
+    clearTimeout(rotT);
+    if (!portrait.matches || !live) return;
+    rotT = setTimeout(() => {   // iOS meldet die neuen Masse erst etwas später
+      const v = sys().video, c = sys().controller;
+      if (v && c && (v.videoWidth !== c.inputWidth || v.videoHeight !== c.inputHeight)) restartCam();
+    }, 800);
+  };
+  document.addEventListener('visibilitychange', onVis);
+  document.addEventListener('pointerdown', lockScreen, true);   // falls der erste Wake-Lock-Versuch eine Geste brauchte
+  portrait.addEventListener('change', onOrient);
+
+  // Mehrfach aufrufbar; räumt nur innerhalb von `container` auf. Auch wenn MindAR noch startet.
   const cleanup = () => {
-    try { sceneEl.systems['mindar-image-system'].stop(); } catch { /* noch nicht gestartet */ }
-    stage && stage.destroy();
+    if (destroyed) return;
+    destroyed = true;
+    clearInterval(iv); clearTimeout(visT); clearTimeout(rotT);
+    document.removeEventListener('visibilitychange', onVis);
+    document.removeEventListener('pointerdown', lockScreen, true);
+    portrait.removeEventListener('change', onOrient);
+    if (wl) wl.release().catch(() => {});
+    if (sys().stop) sys().stop();
+    stopCam();
+    if (stage) stage.destroy();
+    const r = sceneEl.renderer;
     container.innerHTML = '';
     container.classList.remove('ar-host');
+    rot.remove();
+    if (r) { r.dispose(); r.forceContextLoss(); }   // WebGL-Kontext sofort freigeben (iOS hat nur wenige)
   };
 
   const ready = new Promise((res, rej) => {
     sceneEl.addEventListener('arReady', res, { once: true });
-    sceneEl.addEventListener('arError', (e) => rej(Object.assign(new Error('MindAR: ' + (e.detail && e.detail.error)), { name: 'ArError' })), { once: true });
-    setTimeout(() => rej(new Error('MindAR-Start dauert zu lange')), 45000);
+    sceneEl.addEventListener('arError', (e) => rej(named('ArError', 'MindAR: ' + (e.detail && e.detail.error))), { once: true });
+    setTimeout(() => rej(named('Timeout', 'MindAR-Start dauert zu lange')), 45000);
+    // main.js entfernt den Host bei Abbruch/Timeout: dann sofort aufräumen, damit die Kamera nicht weiterläuft
+    iv = setInterval(() => { if (!container.isConnected) rej(named('Cancelled', 'abgebrochen')); }, 300);
   });
+  ready.catch(() => {});
   try {
-    if (!sceneEl.hasLoaded) await once(sceneEl, 'loaded');
-    stage = await buildBoard({ sceneEl, anchor: targetEl.object3D, aspect, debug, isTracking: () => tracking });
+    const guard = (p) => Promise.race([p, ready.then(() => p)]);   // bricht ab, sobald `ready` scheitert
+    if (!sceneEl.hasLoaded) await guard(once(sceneEl, 'loaded'));
+    if (sceneEl.renderer) sceneEl.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));   // iPhone hat 3: spart GPU
+    const board = buildBoard({ sceneEl, anchor: targetEl.object3D, aspect, debug, isTracking: () => tracking });
+    board.then((s) => destroyed && s.destroy(), () => {});          // zu spät fertig: gleich wieder weg
+    stage = await guard(board);
     await ready;
+    clearInterval(iv);
   } catch (e) {
     cleanup();
     throw e;
   }
-
-  targetEl.addEventListener('targetFound', () => { tracking = true; scan.hidden = true; });
-  targetEl.addEventListener('targetLost', () => {
-    tracking = false;
-    scan.classList.add('lost');
-    msg.innerHTML = 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
-    scan.hidden = false;
-  });
-
+  tracking = targetEl.object3D.visible;
+  live = true;
+  onPhase('ready');
   return { ...stage, destroy: cleanup };
 }

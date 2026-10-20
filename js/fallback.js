@@ -3,24 +3,14 @@
 //   cheer(), showChest(r, c), highlightDot('red'|'green'|'yellow'|'blue'|null), onDotTap(cb(color)), destroy()
 import { STATIONS, FINALE, DOTS } from './content.js';
 import { isDebug } from './state.js';
+import { ROUTE, BOARD_IMAGE } from './route.js';
 
 const STEP_MS = 320;
-const PAD_X = 16, PAD_TOP = 30, PAD_BOTTOM = 6;
-// Platzhalter, solange route.js / board.jpg (Agent „Wegfinder“) fehlen – echte Dateien werden ohne Codeänderung genutzt.
-const PLACEHOLDER = { route: [[7, 7], [7, 6], [7, 5], [7, 4], [6, 4], [5, 4], [4, 4]], src: 'assets/board.jpg', area: { x0: 0.05, y0: 0.05, x1: 0.95, y1: 0.95 } };
+const PAD_X = 16, PAD_TOP = 30, PAD_BOTTOM = 2;
 const STOPS = [...STATIONS.map((s) => s.pos), FINALE.pos];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const same = (a, b) => a[0] === b[0] && a[1] === b[1];
 
-async function loadRoute() {
-  try {
-    const m = await import('./route.js');
-    if (Array.isArray(m.ROUTE) && m.ROUTE.length > 1 && m.BOARD_IMAGE && m.BOARD_IMAGE.tileArea) {
-      return { route: m.ROUTE, src: m.BOARD_IMAGE.src || PLACEHOLDER.src, area: m.BOARD_IMAGE.tileArea };
-    }
-  } catch { console.info('route.js nicht vorhanden – Platzhalter-Route'); }
-  return PLACEHOLDER;
-}
 const loadImg = (src) => new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
 
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html) n.innerHTML = html; return n; };
@@ -66,7 +56,7 @@ const CHEST_SVG = `<svg viewBox="0 0 64 56" aria-hidden="true"><rect x="6" y="24
 
 export async function createFallbackStage(container) {
   const debug = isDebug();
-  const { route, src, area } = await loadRoute();
+  const route = ROUTE, { src, tileArea: area } = BOARD_IMAGE;
   const img = await loadImg(src);
   const showGrid = !img || debug;
   const idx = (p) => route.findIndex((q) => same(q, p));

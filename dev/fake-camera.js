@@ -3,8 +3,7 @@
 //   (await import('./dev/fake-camera.js')).install('../Fotos/IMG_6831.jpeg')
 export async function install(src, { width = 720, height = 1280, wobble = 0.006 } = {}) {
   const img = new Image();
-  img.src = src;
-  await img.decode();
+  await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Foto nicht ladbar: ' + src)); img.src = src; });   // decode() hängt in Hintergrund-Tabs
   const cv = document.createElement('canvas');
   cv.width = width; cv.height = height;
   const g = cv.getContext('2d');
@@ -15,7 +14,8 @@ export async function install(src, { width = 720, height = 1280, wobble = 0.006 
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.translate(width / 2 + Math.sin(t * 1.3) * width * wobble, height / 2 + Math.cos(t * 0.9) * height * wobble);
     g.rotate(Math.sin(t * 0.7) * wobble);
-    g.drawImage(img, (-img.width * s) / 2, (-img.height * s) / 2, img.width * s, img.height * s);
+    if (cv.blank) { g.fillStyle = '#333'; g.fillRect(-width, -height, width * 2, height * 2); }   // __fakeCam.blank = true → Ziel verloren
+    else g.drawImage(img, (-img.width * s) / 2, (-img.height * s) / 2, img.width * s, img.height * s);
     requestAnimationFrame(draw);
   })();
   navigator.mediaDevices.getUserMedia = async () => cv.captureStream(30);

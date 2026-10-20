@@ -27,7 +27,12 @@ function tone(f, t, dur, { type = 'sine', vol = 0.16, to } = {}) {
   o.start(t);
   o.stop(t + dur + 0.05);
 }
-const play = (fn) => { if (muted || !ctx || ctx.state !== 'running') return; try { fn(ctx.currentTime); } catch {} };
+const play = (fn) => {
+  if (muted || !ctx) return;
+  const go = () => { try { fn(ctx.currentTime); } catch {} };
+  if (ctx.state === 'running') go();
+  else if (ctx.state === 'suspended') ctx.resume().then(go, () => {}); // iOS: Kontext ist nach Pausen wieder suspended
+};
 
 export const sound = {
   click: () => play((t) => tone(660, t, 0.07, { type: 'triangle', vol: 0.12 })),

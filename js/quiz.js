@@ -6,23 +6,24 @@ import { state, save } from './state.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
-const HINT = 'Tippt eine Antwort an – oder den farbigen Punkt auf dem Brett.';
+const HINT = 'Antwort antippen – oder den Farbpunkt auf dem Brett.';
 const WRONG = 'Leider nicht, versucht es nochmal!';
 
 export function createQuiz({ root, modal, stage, sound }) {
-  let idx = 0, active = false, busy = false, done = null;
+  let idx = 0, active = false, busy = false, done = null, shownAt = 0;
+  const early = () => performance.now() - shownAt < 400; // Klicksperre nach render: Doppeltipp auf „Zur Frage“ darf keinen Joker treffen
   const cur = () => (state.usingBackup ? STATIONS[idx].backup : STATIONS[idx].question);
   const btns = () => [...root.querySelectorAll('.ans')];
   const say = (t, cls = '') => { const m = root.querySelector('.q-msg'); if (m) { m.textContent = t; m.className = 'q-msg ' + cls; } };
 
   function render() {
+    shownAt = performance.now();
     const q = cur(), S = STATIONS[idx];
     root.innerHTML = `<div class="quiz">
-      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${STATIONS.length} · ${S.prize} €</span>${state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}</div>
+      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${STATIONS.length} · ${S.prize} €</span>${state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}<span class="jokers"><button class="joker" data-j="fifty">50:50</button><button class="joker" data-j="audience">Publikum</button></span></div>
       <div class="q-text"><span>${q.text}</span></div>
       <div class="answers">${q.options.map((o, i) => `<button class="ans" data-i="${i}" style="--lc:${DOTS[i].hex}" aria-label="Antwort ${LETTERS[i]}: ${o}"><span class="ans-in"><span class="letter l${i}">${LETTERS[i]}</span><span class="txt">${o}</span></span></button>`).join('')}</div>
       <p class="q-msg" aria-live="polite"></p>
-      <div class="jokers"><button class="joker" data-j="fifty">50:50</button><button class="joker" data-j="audience">Publikum</button></div>
     </div>`;
     btns().forEach((b, i) => (b.onclick = () => pick(i)));
     root.querySelector('[data-j=fifty]').onclick = fifty;
@@ -43,7 +44,7 @@ export function createQuiz({ root, modal, stage, sound }) {
   }
 
   async function pick(i) {
-    if (i < 0 || !active || busy || state.wrong.includes(i) || state.gone.includes(i)) return;
+    if (i < 0 || !active || busy || early() || state.wrong.includes(i) || state.gone.includes(i)) return;
     busy = true;
     const q = cur(), b = btns()[i];
     sound.click();
@@ -83,7 +84,7 @@ export function createQuiz({ root, modal, stage, sound }) {
   }
 
   function fifty() {
-    if (busy || state.jokers.fifty || !active) return;
+    if (busy || early() || state.jokers.fifty || !active) return;
     const q = cur();
     const cand = [0, 1, 2, 3].filter((i) => i !== q.correct && !state.wrong.includes(i) && !state.gone.includes(i));
     if (cand.length < 2) { say('Jetzt würde der Joker nichts mehr bringen.'); return; }
@@ -93,7 +94,7 @@ export function createQuiz({ root, modal, stage, sound }) {
   }
 
   function audience() {
-    if (busy || state.jokers.audience || !active) return;
+    if (busy || early() || state.jokers.audience || !active) return;
     state.jokers.audience = true; save(); paint(); sound.tension();
     let t = 30;
     modal.innerHTML = `<div class="modal-card"><h3>Fragt die Hochzeitsgäste!</h3><p>Jetzt dürfen alle im Raum mitraten. Danach entscheidet ihr.</p><div class="timer" aria-live="off">${t}</div><button class="btn btn-gold">Weiter</button></div>`;
