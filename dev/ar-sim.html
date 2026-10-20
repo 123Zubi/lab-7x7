@@ -63,10 +63,12 @@
   const VIEWS = { schraeg: ['0 0.62 0.68', '-42 0 0'], oben: ['0 1.2 0', '-90 0 0'], flach: ['0 0.12 0.75', '-8 0 0'] };
   document.querySelectorAll('[data-v]').forEach((b) => (b.onclick = () => {
     const [p, r] = VIEWS[b.dataset.v];
-    document.querySelector('#cam').setAttribute('position', p);
+    const k = Math.max(1, (innerHeight / innerWidth) * 0.85);   // Hochformat: Kamera zurückziehen, damit das Brett passt
+    const [x, y, z] = p.split(' ').map((n) => n * k);
+    document.querySelector('#cam').setAttribute('position', { x, y, z });
     document.querySelector('#cam').setAttribute('rotation', r);
   }));
-  if (q.get('view')) document.querySelector(`[data-v="${q.get('view')}"]`).click();
+  document.querySelector(`[data-v="${q.get('view') || 'schraeg'}"]`).click();
 </script>
 </body>
 </html>
