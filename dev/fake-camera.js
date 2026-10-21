@@ -2,6 +2,8 @@
 // In der Browser-Konsole von app/index.html?debug=1:
 //   (await import('./dev/fake-camera.js')).install('../Fotos/IMG_6831.jpeg')
 // Latenztest: __fakeCam.dx / .dy (Pixel) verschieben, __fakeCam.rot (rad) dreht das Foto, install(src, { wobble: 0 }) schaltet das Wackeln ab.
+// Distanztest: __fakeCam.zoom (Standard 1) verkleinert das Foto um die Bildmitte (0,5 ≙ doppelte Entfernung).
+// __fakeCam.constraints: die von ar.js angefragte Videogrösse (geliefert wird immer width×height aus install()).
 export async function install(src, { width = 720, height = 1280, wobble = 0.006, noise = 0 } = {}) {
   const img = new Image();
   await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Foto nicht ladbar: ' + src)); img.src = src; });   // decode() hängt in Hintergrund-Tabs
@@ -20,8 +22,10 @@ export async function install(src, { width = 720, height = 1280, wobble = 0.006,
   (function draw() {
     const t = (performance.now() - t0) / 1000;
     g.setTransform(1, 0, 0, 1, 0, 0);
+    if (cv.zoom < 1) { g.fillStyle = '#5a5048'; g.fillRect(0, 0, width, height); }   // Tisch rund um das verkleinerte Foto
     g.translate((cv.dx || 0) + width / 2 + Math.sin(t * 1.3) * width * wobble, (cv.dy || 0) + height / 2 + Math.cos(t * 0.9) * height * wobble);
     g.rotate(Math.sin(t * 0.7) * wobble + (cv.rot || 0));
+    if (cv.zoom) g.scale(cv.zoom, cv.zoom);
     if (cv.blank) { g.fillStyle = '#333'; g.fillRect(-width, -height, width * 2, height * 2); }   // __fakeCam.blank = true → Ziel verloren
     else g.drawImage(img, (-img.width * s) / 2, (-img.height * s) / 2, img.width * s, img.height * s);
     if (grain) {
@@ -30,7 +34,7 @@ export async function install(src, { width = 720, height = 1280, wobble = 0.006,
     }
     requestAnimationFrame(draw);
   })();
-  navigator.mediaDevices.getUserMedia = async () => cv.captureStream(30);
+  navigator.mediaDevices.getUserMedia = async (c) => { cv.constraints = c; return cv.captureStream(30); };
   window.__fakeCam = cv;
   return cv;
 }

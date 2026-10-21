@@ -42,7 +42,62 @@ const loadScript = (src) => new Promise((res, rej) => {
   s.onerror = () => rej(named('CdnError', 'Skript nicht ladbar: ' + src));
   document.head.append(s);
 });
-const gum = () => navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+/** Kamera-Stream. res = kurze Bildseite als Wunsch (720 → 1280×720, 1080 → 1920×1080), 0 = Browser-Vorgabe (iOS vermutlich 640×480). */
+const gum = (res = 0) => navigator.mediaDevices.getUserMedia({
+  audio: false,
+  video: res > 0 ? { facingMode: 'environment', width: { ideal: Math.round((res * 16) / 9) }, height: { ideal: res } } : { facingMode: 'environment' },
+});
+
+/**
+ * Eigene Glättung einer Pose (One-Euro-Filter nach Casiez 2012, Zeit in SEKUNDEN). Position und Drehung bekommen dasselbe
+ * Gewicht pro Schritt (Slerp für die Drehung), weil ihr Rauschen gekoppelt ist (siehe docs/AR.md „Tracking-Latenz“).
+ * Grenzfrequenz = minCF + beta·Geschwindigkeit (rad/s). Geschwindigkeit = max(Verschiebung quer zur Blickrichtung / Entfernung,
+ * Drehung um die Blickachse), je als Vektor mit dCF geglättet (Rauschen mittelt sich weg, echte Bewegung nicht). Tiefe und
+ * Kippen zählen bewusst nicht: dort rauscht MindAR am stärksten, sie würden die Glättung im Stand sonst aushebeln (gemessen).
+ * Stillstand → minCF (stark geglättet), Schwenken → hohe Grenzfrequenz (kaum Verzug). minCF ≤ 0 = Filter aus.
+ */
+export function makePoseSmoother(THREE, { minCF = 0.5, beta = 40, dCF = 1 } = {}) {
+  const P = new THREE.Vector3(), Q = new THREE.Quaternion(), dP = new THREE.Vector3(), dR = new THREE.Vector3();
+  const vP = new THREE.Vector3(), vR = new THREE.Vector3(), n = new THREE.Vector3(), qd = new THREE.Quaternion(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  const alpha = (fc, dt) => 1 / (1 + 1 / (2 * Math.PI * fc * dt));
+  let init = false;
+  const api = {
+    pos: P, quat: Q, fc: 0,
+    reset() { init = false; },
+    /** Rohwerte p (Vector3) und q (Quaternion, optional), dt in s → geglättet in api.pos / api.quat. */
+    filter(pIn, qIn, dt) {
+      if (!init || !(dt > 0) || minCF <= 0) {
+        P.copy(pIn); if (qIn) Q.copy(qIn);
+        vP.set(0, 0, 0); vR.set(0, 0, 0); init = true;
+        return api;
+      }
+      const dist = Math.max(P.length(), 1e-6);
+      dP.subVectors(pIn, P).divideScalar(dist * dt);                              // rad/s
+      n.copy(P).divideScalar(dist);                                               // Blickrichtung zum Ziel
+      dP.addScaledVector(n, -dP.dot(n));                                          // nur quer dazu: die Tiefe rauscht am stärksten
+      if (qIn) {                                                                  // Drehvektor (Achse·Winkel) von Q nach qIn, pro s
+        qd.copy(Q).invert().premultiply(qIn);
+        if (qd.w < 0) qd.set(-qd.x, -qd.y, -qd.z, -qd.w);
+        const sn = Math.hypot(qd.x, qd.y, qd.z), ang = 2 * Math.atan2(sn, qd.w);
+        dR.set(qd.x, qd.y, qd.z).multiplyScalar(sn > 1e-9 ? ang / sn / dt : 0);
+      }
+      const ad = alpha(dCF, dt);
+      vP.lerp(dP, ad); vR.lerp(dR, ad);
+      api.fc = minCF + beta * Math.max(vP.length(), Math.abs(vR.dot(n)));   // Drehung nur um die Blickachse (Kippen rauscht stark)
+      const a = alpha(api.fc, dt);
+      P.lerp(pIn, a);
+      if (qIn) Q.slerp(qIn, a);
+      return api;
+    },
+    /** Matrix-Variante (Skalierung wird roh übernommen, sie ist bei MindAR konstant). */
+    filterMatrix(m, dt, out) {
+      m.decompose(p, q, s);
+      api.filter(p, q.normalize(), dt);   // MindARs Matrix ist nicht exakt orthonormal: |q| ≠ 1 liesse slerp bei < ~4° stehen bleiben
+      return out.compose(P, Q, s);
+    },
+  };
+  return api;
+}
 /** Lädt das Bildziel vorab: fehlt es oder ist es kaputt, sofort ein benannter Fehler statt langem Warten. */
 async function checkTargets(src) {
   let b = null;
@@ -60,7 +115,7 @@ const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
  * Baut Paar, Marker, Truhe, Farbpunkte und Debug-Overlay unter `anchor` (THREE.Object3D in Zielkoordinaten)
  * und liefert die Stage-Schnittstelle. Wird von createArStage und von dev/ar-sim.html benutzt.
  */
-export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, isTracking = () => true }) {
+export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, isTracking = () => true, iconSmooth = {} }) {
   const AF = window.AFRAME, THREE = AF.THREE;
   registerCouple(AF);
   const cell = (TARGET_TILE_AREA.x1 - TARGET_TILE_AREA.x0) / 7;
@@ -179,7 +234,11 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   const EMOJI = { weihnachtsmarkt: '🎄', kino: '🍿', dinner: '🕯️', spieleabend: '🎲', flitterwochen: '🌴' };
   // Icon über der offenen Truhe: gross (2,4 Feldbreiten Durchmesser), Mitte 2 Feldbreiten über der Truhe, um 35 % des Wegs
   // zur Brettmitte versetzt (Randfelder: bleibt im Bild und steht nicht über dem Rand). Am iPhone-Bild nachjustierbar.
-  const ICON_R = cell * 1.2, ICON_UP = cell * 2, ICON_IN = 0.35, TAP_S = 1.5;
+  // Runde 5: 1,6 statt 2 Feldbreiten hoch (kürzerer Hebelarm: Drehfehler des Trackings bewegen das Icon weniger), Grösse gleich.
+  const ICON_R = cell * 1.2, ICON_UP = cell * 1.6, ICON_IN = 0.35, TAP_S = 1.5;
+  // Eigene, stärkere Glättung der Icon-Position in Weltkoordinaten (= Kamerakoordinaten, die MindAR-Kamera steht still).
+  const iconFilter = makePoseSmoother(THREE, { minCF: 0.4, beta: 25, dCF: 1, ...iconSmooth });
+  const vIcon = new THREE.Vector3();
   const texCache = {};
   /** Canvas-Textur, einmal gezeichnet und geteilt (Ring, Hand, Schriftzug). */
   const canvasTex = (key, w, h, draw) => texCache[key] || (texCache[key] = (() => {
@@ -380,22 +439,32 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     if (u.icon) {
       const { g: ig, spin, ring, label, hand, off } = u.icon, k = clamp01((t - 1.6) / 0.8), e = easeOutBack(k);
       ig.visible = k > 0;
-      if (ig.visible) {
+      if (!ig.visible) iconFilter.reset();
+      else {
         const top = g.position.y + s.position.y + H;
-        ig.position.set(g.position.x + off.x * e, top + 0.01 + ICON_UP * e + Math.sin(time * 2) * cell * 0.08 * k, g.position.z + off.z * e);
+        // ruhig: langsames, kleines Wippen (ohne das Wippen der Truhe, das die Höhe sonst doppelt schaukeln lässt)
+        ig.position.set(g.position.x + off.x * e, g.position.y + H + 0.035 * lift + 0.01 + ICON_UP * e + Math.sin(time * 1.4) * cell * 0.05 * k, g.position.z + off.z * e);
+        if (k < 1) ig.position.y = Math.max(ig.position.y, top + 0.01);   // beim Aufsteigen nicht unter dem Truhenrand
         ig.scale.setScalar(Math.max(0.001, smooth(k * 1.3) * out));
         if (sceneEl.camera) {   // Billboard: gleiche Ausrichtung wie die Kamera (auch genau von oben eindeutig)
+          up.updateWorldMatrix(true, false);
           up.getWorldQuaternion(qUp).invert().multiply(sceneEl.camera.getWorldQuaternion(qCam));
-          if (Number.isFinite(qUp.x + qUp.w)) { ig.quaternion.copy(qUp); keepOnScreen(ig); }
+          if (Number.isFinite(qUp.x + qUp.w)) {
+            ig.quaternion.copy(qUp);
+            keepOnScreen(ig);
+            // Position in Weltkoordinaten glätten: Drehfehler des Bretts wirken über den Hebelarm (Icon schwebt hoch) verstärkt
+            up.localToWorld(vIcon.copy(ig.position));
+            if (Number.isFinite(vIcon.x + vIcon.y + vIcon.z)) up.worldToLocal(ig.position.copy(iconFilter.filter(vIcon, null, dtLast).pos));
+          }
         }
-        spin.rotation.y = Math.sin(time * 0.9) * 0.26 * k + (1 - k) * Math.PI * 2;   // beim Aufsteigen eine Drehung
+        spin.rotation.y = Math.sin(time * 0.7) * 0.14 * k + (1 - k) * Math.PI * 2;   // ±8° pendeln; beim Aufsteigen eine Drehung
         const p = (time % TAP_S) / TAP_S, press = Math.exp(-(((p - 0.42) / 0.07) ** 2));   // press: 1 im Moment des Tipps
         const reach = smooth(p / 0.4) * (1 - smooth((p - 0.45) / 0.35)), d = ICON_R * 0.22 * (1 - reach);
         hand.position.set(ICON_R * 0.95 + d, -ICON_R * 0.6 - d, 0);
         hand.scale.setScalar(1 - 0.15 * press);
-        ring.scale.setScalar(1 + 0.05 * Math.sin(time * 4) + 0.12 * press);
+        ring.scale.setScalar(1 + 0.03 * Math.sin(time * 3) + 0.1 * press);
         ring.material.opacity = k * (0.7 + 0.3 * press);
-        label.position.y = -ICON_R * 1.12 + Math.sin(time * 3) * ICON_R * 0.03;
+        label.position.y = -ICON_R * 1.12;
         hand.material.opacity = label.material.opacity = smooth((t - 2.3) / 0.3);   // erst wenn das Icon steht
       }
     }
@@ -422,7 +491,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   }
 
   // --- Bewegung (eigene rAF-Schleife; läuft auch weiter, wenn das Ziel kurz verloren ist) ---
-  let curIdx = 0, active = -1, reached = -1, move = null, cheerT = 0, litColor = null, time = 0, last = performance.now(), raf = 0;
+  let curIdx = 0, active = -1, reached = -1, move = null, cheerT = 0, litColor = null, time = 0, dtLast = 0, last = performance.now(), raf = 0;
   const pos = U(...ROUTE[0]);
   const headTo = (from, to) => Math.atan2(to.x - from.x, to.z - from.z);
   let heading = headTo(pos, U(...ROUTE[1])), want = heading;
@@ -460,7 +529,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   document.addEventListener('visibilitychange', onHide);
   function frame(now) {
     const dt = Math.min(0.25, (now - last) / 1000);
-    last = now; time += dt;
+    last = now; time += dt; dtLast = dt;
     if (move) {
       move.t += dt;
       const to = move.pts[move.k];
@@ -622,11 +691,16 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   const q = new URLSearchParams(location.search);
   const debug = q.get('debug') === '1';
   const targetSrc = (debug && q.get('target')) || 'targets.mind';             // ?debug=1&target=… nur zum Testen (z. B. 404)
-  // One-Euro-Filter von MindAR (Zeit in ms!): pro Matrixelement Grenzfrequenz = mincf + beta·|Ableitung|, in kHz.
-  // Standard „sehr direkt“ mincf 1 = Filter praktisch aus (am iPhone bestätigt: klebt am besten am Brett); beta 0 = gleiche
-  // Behandlung von Drehung und Verschiebung. Ruhiger: ?mincf=0.005 (5 Hz). Früher 0.0001/0.001 → schwamm hinterher. docs/AR.md.
+  // Feintuning per URL (docs/AR.md „Runde 5“). MindARs eigener One-Euro-Filter (Zeit in ms, pro Matrixelement) bleibt
+  // neutral (mincf 1, beta 0 = aus); geglättet wird die Pose stattdessen auf dem Anker `ar-anchor` (makePoseSmoother, Sekunden):
+  //   smooth  Grenzfrequenz im Stillstand in Hz (0 = aus), sbeta: wie schnell sie bei Bewegung steigt, sdcf: Glättung der Geschwindigkeit
+  //   ismooth Icon-Grenzfrequenz im Stillstand (Hz), hold: Sekunden, die die letzte Pose nach Verlust stehen bleibt (danach 0,4 s ausblenden)
+  //   res     Videowunsch kurze Seite (720 Standard, 1080, 0 = Browser-Vorgabe), miss/warm: MindAR missTolerance/warmupTolerance (Frames)
   const num = (k, d) => (q.has(k) && Number.isFinite(+q.get(k)) ? +q.get(k) : d);
   const minCF = num('mincf', 1), beta = num('beta', 0);
+  const sm = { minCF: num('smooth', 0.5), beta: num('sbeta', 40), dCF: num('sdcf', 1) };
+  const iconSmooth = { minCF: num('ismooth', 0.4) };
+  const HOLD = num('hold', 1.2), FADE = 0.4, RES = num('res', 720), MISS = num('miss', 20), WARM = num('warm', 4);
 
   // Bildschirm wach halten (Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
   let destroyed = false, wl = null, wlBusy = false;
@@ -656,7 +730,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   ]).catch(bail);
   if (!container.isConnected) bail(named('Cancelled', 'abgebrochen'));
   onPhase('permission');
-  let cam = await gum().catch(bail);
+  let cam = await gum(RES).catch(bail);
   if (!container.isConnected) { cam.getTracks().forEach((t) => t.stop()); bail(named('Cancelled', 'abgebrochen')); }
   onPhase('starting');
 
@@ -670,7 +744,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   container.insertAdjacentHTML('beforeend', `
 <a-scene embedded light="defaultLightsEnabled: false" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false"
   renderer="antialias: true; alpha: true"
-  mindar-image="imageTargetSrc: ${targetSrc}; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: ${minCF}; filterBeta: ${beta}; missTolerance: 10; warmupTolerance: 4">
+  mindar-image="imageTargetSrc: ${targetSrc}; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: ${minCF}; filterBeta: ${beta}; missTolerance: ${MISS}; warmupTolerance: ${WARM}">
   <a-camera position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
   <a-entity id="ar-target" mindar-image-target="targetIndex: 0"></a-entity>
 </a-scene>
@@ -684,14 +758,11 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   document.body.append(rot);   // ausserhalb des Hosts: muss auch über dem Quiz-Panel liegen
 
   let tracking = false, stage = null, iv = 0, live = false, restarting = false, fatalSent = false, visT = 0, rotT = 0;
-  // Gleich anhängen: ein früher targetFound (vor dem Ende von buildBoard) darf nicht verloren gehen
-  targetEl.addEventListener('targetFound', () => { tracking = true; scan.hidden = true; });
   const showLost = () => {
     scan.classList.add('lost');
     msg.innerHTML = 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
     scan.hidden = false;
   };
-  targetEl.addEventListener('targetLost', () => { tracking = false; showLost(); });
 
   const sys = () => (sceneEl.systems && sceneEl.systems['mindar-image-system']) || {};
   const stopCam = () => {
@@ -713,6 +784,39 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   // MindAR 1.2.5 anpassen (nur dieses System-Objekt): eigener Stream statt eigenem getUserMedia, robustes stop(),
   // kein Start/keine Schleife mehr nach destroy, resize-Handler nach destroy wirkungslos.
   const S = sys();
+  // Anker `ar-anchor`: trägt alle Inhalte, bekommt die geglättete Pose. Verliert MindAR das Ziel, bleibt die letzte Pose HOLD s
+  // stehen und blendet dann in FADE s aus (Canvas-Deckkraft); erst danach kommt der Hinweis. Wiedergefunden in der Haltezeit:
+  // weich weiter, sonst springt der Anker direkt auf die neue Pose.
+  const THREE = window.AFRAME.THREE;
+  const anchor = Object.assign(new THREE.Group(), { name: 'ar-anchor', matrixAutoUpdate: false, visible: false });
+  sceneEl.object3D.add(anchor);
+  const smoother = (anchor.userData.smoother = makePoseSmoother(THREE, sm));
+  let poseT = 0, lostAt = 0;
+  const setFade = (o) => { if (sceneEl.canvas) sceneEl.canvas.style.opacity = o >= 1 ? '' : String(o); };
+  const hideNow = () => { lostAt = 0; anchor.visible = false; tracking = false; setFade(1); };
+  const targetComp = () => targetEl.components['mindar-image-target'];
+  const hookTarget = () => {   // nach 'loaded' der Szene (vorher gibt es die Komponente evtl. noch nicht), vor MindARs Start
+    const tc = targetComp(), upd0 = tc && tc.updateWorldMatrix;
+    if (!upd0) return;
+    tc.updateWorldMatrix = function (wm) {
+      upd0.call(this, wm);
+      const now = performance.now();
+      if (!wm) { if (anchor.visible && !lostAt) lostAt = now; return; }
+      if (!anchor.visible) smoother.reset();
+      smoother.filterMatrix(targetEl.object3D.matrix, (now - poseT) / 1000, anchor.matrix);
+      anchor.matrixWorldNeedsUpdate = true;
+      poseT = now;
+      if (lostAt || !anchor.visible) { lostAt = 0; setFade(1); anchor.visible = tracking = true; scan.hidden = true; }
+    };
+  };
+  (function holdTick() {
+    if (destroyed) return;
+    if (lostAt) {
+      const k = (performance.now() - lostAt) / 1000 - HOLD;
+      if (k >= FADE) { hideNow(); showLost(); } else setFade(k > 0 ? 1 - k / FADE : 1);
+    }
+    requestAnimationFrame(holdTick);
+  })();
   if (S._startAR && S._startVideo) {
     const start0 = S._startAR, resize0 = S._resize;
     S._startVideo = function () {
@@ -756,14 +860,14 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   async function restartCam() {
     if (destroyed || restarting || !live || document.hidden) return;
     restarting = true;
-    const tc = targetEl.components['mindar-image-target'];
-    if (targetEl.object3D.visible && tc) tc.updateWorldMatrix(null);   // altes Bild nicht stehen lassen
+    if (targetEl.object3D.visible && targetComp()) targetComp().updateWorldMatrix(null);
+    hideNow();   // altes Bild nicht stehen lassen (keine Haltezeit beim Neustart)
     scan.classList.remove('lost');
     msg.innerHTML = 'Kamera startet neu …<small>Haltet die Kamera aufs Brett</small>';
     scan.hidden = false;
     try {
       sys().stop();
-      cam = await gum();
+      cam = await gum(RES);
       if (destroyed) return stopCam();
       await new Promise((res, rej) => {
         const done = (err) => {
@@ -844,9 +948,10 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   try {
     const guard = (p) => Promise.race([p, ready.then(() => p)]);   // bricht ab, sobald `ready` scheitert
     if (!sceneEl.hasLoaded) await guard(once(sceneEl, 'loaded'));
+    hookTarget();
     // iPhone hat 3: 1.5 reicht für die kleinen Low-Poly-Figuren und lässt der Bilderkennung (TF.js, gleiche GPU) mehr Luft
     if (sceneEl.renderer) sceneEl.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
-    const board = buildBoard({ sceneEl, anchor: targetEl.object3D, aspect, debug, isTracking: () => tracking });
+    const board = buildBoard({ sceneEl, anchor, aspect, debug, isTracking: () => tracking, iconSmooth });
     board.then((s) => destroyed && s.destroy(), () => {});          // zu spät fertig: gleich wieder weg
     stage = await guard(board);
     await ready;
@@ -866,13 +971,13 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
       nFr++;
       if (now - t > 1000) {
         const v = sys().video, k = 1000 / (now - t);
-        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · mincf ${minCF} beta ${beta}`;
+        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · smooth ${sm.minCF}/${sm.beta} · hold ${HOLD} · mincf ${minCF}`;
         nUpd = nFr = 0; t = now;
       }
       requestAnimationFrame(count);
     })(t);
   }
-  tracking = targetEl.object3D.visible;
+  tracking = anchor.visible;
   live = true;
   onPhase('ready');
   return { ...stage, destroy: cleanup };
