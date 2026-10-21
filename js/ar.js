@@ -1,6 +1,6 @@
 // AR-Bühne: MindAR 1.2.5 (Image Tracking) + A-Frame 1.5.0, Stage-Schnittstelle wie fallback.js / docs/ARCHITEKTUR.md:
 //   walkTo(i, {instant}) → Promise   i: 0..3 = Station 1..4, 4 = Ziel; instant = direkt hinsetzen (Reload)
-//   cheer(), showChest(r, c), hideChest(), highlightDot('red'|'green'|'yellow'|'blue'|null), onDotTap(cb(color)), destroy()
+//   cheer(), showCard(r, c, {icon, theme}) → Promise<DOMRect>, hideCard(), reset(), showChest(r, c), hideChest(), highlightDot('red'|'green'|'yellow'|'blue'|null), onDotTap(cb(color)), destroy()
 // Koordinaten: MindAR-Ziel = Bild 1 Einheit breit, Mitte 0, x rechts, y oben, z aus dem Brett heraus (zur Kamera).
 // Stehende Objekte (Paar, Truhe, Stern) hängen in der Gruppe `up` (rotation.x = 90°): dort ist y = senkrecht zum Brett,
 // x = Bild-x, z = −Bild-y (also +z = Richtung Reihe 7). Ablauf/Kalibrierung: docs/AR.md.
@@ -92,6 +92,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   const setAnim = (a) => coupleEl.components.couple && coupleEl.components.couple.setAnim(a);
 
   // --- Station-Ringe (flach) + goldener Stern über (4,4) ---
+  // Geheim: Ring k erscheint erst, wenn das Paar auf Station k ankommt (danach dezent), der Stern erst am Ziel. ?debug=1 zeigt alles.
   const STOPS = [...STATIONS.map((s) => s.pos), FINALE.pos];
   const stops = stopIndices(ROUTE, STOPS);
   const rings = STATIONS.map((s) => {
@@ -136,82 +137,238 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
 
   if (debug) root.add(makeDebugOverlay(THREE, aspect));
 
-  // --- Truhe ---
-  let chest = null;
+  // Goldenes, weiches Leuchten (Textur geteilt; Material je Objekt wegen eigener Deckkraft)
+  let glowTex = null;
+  function glowMat() {
+    if (!glowTex) {
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 64;
+      const cg = cv.getContext('2d'), grad = cg.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,240,170,1)'); grad.addColorStop(0.4, 'rgba(255,200,60,.55)'); grad.addColorStop(1, 'rgba(255,180,0,0)');
+      cg.fillStyle = grad; cg.fillRect(0, 0, 64, 64);
+      glowTex = new THREE.CanvasTexture(cv);
+    }
+    return new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 });
+  }
+  // Paar tritt einen halben Schritt Richtung Brettmitte (am Ziel: Richtung Reihe 7) und schaut aufs Feld (r,c)
+  function stepAside(r, c) {
+    const cp = U(r, c), d = U(4, 4).sub(cp).setY(0);
+    if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
+    const side = cp.clone().add(d.normalize().multiplyScalar(cell * 0.75));
+    side.y = r === 4 && c === 4 ? 0 : cp.y;
+    moveAlong([side], 0.4).then(() => { if (!move) want = headTo(pos, cp); });
+  }
+
+  // --- Schatz: Truhe hüpft aus dem Feld, Paar öffnet sie, Truhe schwebt, Deckel auf, Stations-Icon steigt auf ---
+  // Antippen des Icons (oder nach 1,5 s irgendwo) löst das Promise von showCard mit dem Bildschirm-Rechteck des Icons auf.
+  const imgCache = new Map();   // genau ein Ladeversuch pro Datei, Ergebnis gecacht (fehlende Datei → einmal 404, dann Platzhalter)
+  const loadImg = (src) => {
+    if (!src) return Promise.resolve(null);
+    if (!imgCache.has(src)) imgCache.set(src, new Promise((res) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => res(null);
+      i.src = src;
+    }));
+    return imgCache.get(src);
+  };
+  const EMOJI = { weihnachtsmarkt: '🎄', kino: '🍿', dinner: '🕯️', spieleabend: '🎲', flitterwochen: '🌴' };
+  const ICON_R = 0.036;
+  /** Badge-Textur: fertiges PNG (eigene Transparenz) oder gezeichneter Platzhalter mit Goldring, Elfenbein und Motiv je Thema. */
+  function badgeTexture(img, theme) {
+    if (img) {   // fertiger Badge (PNG mit Transparenz): unverändert, quadratisch
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      return tex;
+    }
+    const N = 256, cv = document.createElement('canvas');
+    cv.width = cv.height = N;
+    const g = cv.getContext('2d'), m = N / 2;
+    const circle = (r) => { g.beginPath(); g.arc(m, m, r, 0, Math.PI * 2); };
+    const gold = g.createLinearGradient(0, 0, N, N);
+    gold.addColorStop(0, '#f7e39a'); gold.addColorStop(0.45, '#c9962b'); gold.addColorStop(0.7, '#f5d77a'); gold.addColorStop(1, '#a8761c');
+    circle(m); g.fillStyle = gold; g.fill();
+    const ivory = g.createRadialGradient(m, m * 0.85, 10, m, m, m);
+    ivory.addColorStop(0, '#fffdf6'); ivory.addColorStop(1, '#f1e4c2');
+    circle(m - 16); g.fillStyle = ivory; g.fill();
+    circle(m - 26); g.strokeStyle = gold; g.lineWidth = 3; g.stroke();
+    for (let k = 0; k < 12; k++) {   // kleine Goldperlen im Ring
+      const a = (k / 12) * Math.PI * 2;
+      g.beginPath(); g.arc(m + Math.cos(a) * (m - 8), m + Math.sin(a) * (m - 8), 3.5, 0, Math.PI * 2); g.fillStyle = '#fff4c4'; g.fill();
+    }
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = '112px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+    g.fillStyle = '#a8761c';
+    g.fillText(EMOJI[theme] || '♥', m, m + 6);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
   function makeChest() {
-    const W = 0.075, D = 0.052, H = 0.04, R = D / 2;
-    const g = new THREE.Group(), s = new THREE.Group();
+    const W = 0.08, D = 0.054, H = 0.042, R = D / 2;
+    const g = new THREE.Group(), s = new THREE.Group();   // g: Feld + Blickrichtung, s: Hüpfen/Schweben/Wackeln
     g.add(s);
-    const wood = std(0x8a4b12), gold = std(0xf5c542, { metalness: 0.6, roughness: 0.35, emissive: 0x5a3c00 });
-    const base = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), wood);
-    base.position.y = H / 2;
-    const coins = new THREE.Mesh(new THREE.BoxGeometry(W * 0.9, 0.006, D * 0.85), std(0xffd54a, { emissive: 0xffb300, emissiveIntensity: 0.8, metalness: 0.5 }));
-    coins.position.y = H - 0.002;
-    s.add(base, coins);
+    const wood = std(0x84461a), dark = std(0x4a2710), lidWood = std(0x95521d, { side: THREE.DoubleSide });
+    const gold = std(0xf5c542, { metalness: 0.6, roughness: 0.35, emissive: 0x5a3c00 });
+    const box = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, z); s.add(o); return o; };
+    box(W, H, D, wood, 0, H / 2, 0);                                  // Kasten
+    box(W + 0.002, 0.003, D + 0.002, dark, 0, H * 0.45, 0);           // Brettfuge
+    box(W + 0.005, 0.005, D + 0.005, gold, 0, 0.0025, 0);             // Goldsockel
+    box(W + 0.004, 0.004, D + 0.004, gold, 0, H - 0.0015, 0);         // Goldrand oben (ragt 0,5 mm über den Kasten: kein Z-Fighting)
+    for (const x of [-W * 0.3, W * 0.3]) box(0.008, H + 0.002, D + 0.003, gold, x, H / 2, 0);   // Beschläge
+    box(W * 0.88, 0.008, D * 0.8, std(0xffd54a, { emissive: 0xffb300, emissiveIntensity: 0.8, metalness: 0.5 }), 0, H - 0.0055, 0);   // Goldfüllung (Oberkante unter dem Rand: kein Z-Fighting)
+    box(0.016, 0.018, 0.004, gold, 0, H - 0.009, D / 2 + 0.002);     // Schloss
+    box(0.003, 0.007, 0.002, dark, 0, H - 0.011, D / 2 + 0.0045);    // Schlüsselloch
     const lid = new THREE.Group();
-    lid.position.set(0, H, -R);                      // Scharnier hinten oben
-    const lg = new THREE.CylinderGeometry(R, R, W, 8, 1, false, 0, Math.PI);
-    lg.rotateZ(Math.PI / 2);                           // Halbzylinder, Achse entlang x, Wölbung nach oben
-    const lm = new THREE.Mesh(lg, std(0xa85e17, { side: THREE.DoubleSide }));
+    lid.position.set(0, H, -R);                                         // Scharnier hinten oben
+    const lm = new THREE.Mesh(new THREE.CylinderGeometry(R, R, W, 8, 1, false, 0, Math.PI).rotateZ(Math.PI / 2), lidWood);
     lm.position.z = R;
     lid.add(lm);
-    for (const x of [-W * 0.32, W * 0.32]) {
-      const band = new THREE.Mesh(new THREE.BoxGeometry(0.008, H + 0.002, D + 0.002), gold);
-      band.position.set(x, H / 2, 0);
-      const lb = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.001, R + 0.001, 0.008, 8, 1, false, 0, Math.PI).rotateZ(Math.PI / 2), gold);
+    for (const x of [-W * 0.3, W * 0.3]) {
+      const lb = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.0015, R + 0.0015, 0.008, 8, 1, false, 0, Math.PI).rotateZ(Math.PI / 2), gold);
       lb.position.set(x, 0, R);
-      s.add(band); lid.add(lb);
+      lid.add(lb);
     }
-    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.014, 0.004), gold);
-    lock.position.set(0, H - 0.006, D / 2 + 0.002);
-    s.add(lid, lock);
-    // Goldglanz: additives Leuchten + aufsteigende Funken
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = 64;
-    const cg = cv.getContext('2d'), grad = cg.createRadialGradient(32, 32, 0, 32, 32, 32);
-    grad.addColorStop(0, 'rgba(255,240,170,1)'); grad.addColorStop(0.4, 'rgba(255,200,60,.55)'); grad.addColorStop(1, 'rgba(255,180,0,0)');
-    cg.fillStyle = grad; cg.fillRect(0, 0, 64, 64);
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
-    glow.position.y = H + 0.015;
+    s.add(lid);
+    const glow = new THREE.Sprite(glowMat());   // Goldglanz aus der offenen Truhe
+    glow.position.y = H + 0.012;
     s.add(glow);
-    const sparks = Array.from({ length: 8 }, () => {
-      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.0055), basic(0xffe27a, { opacity: 0 }));
+    const sparks = Array.from({ length: 6 }, () => {
+      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.005), basic(0xffe27a, { opacity: 0 }));
       s.add(m);
       return m;
     });
-    Object.assign(g.userData, { s, lid, glow, sparks, H, t0: time });
+    Object.assign(g.userData, { s, lid, glow, sparks, H });
     return g;
   }
-  function animChest() {
-    const { s, lid, glow, sparks, H, t0 } = chest.userData, t = time - t0;
-    s.scale.setScalar(Math.max(0.001, easeOutBack(clamp01(t / 0.45))));
-    s.position.y = Math.max(0, Math.sin(clamp01(t / 0.6) * Math.PI)) * 0.06;   // springt aus dem Feld
-    lid.rotation.x = -1.95 * smooth((t - 0.6) / 0.5);                          // Deckel öffnet nach hinten
-    const gk = smooth((t - 0.85) / 0.4), pulse = Math.sin(t * 6);
-    glow.material.opacity = gk * (0.8 + 0.2 * pulse);
-    glow.scale.setScalar(0.03 + 0.11 * gk * (1 + 0.08 * pulse));
+
+  let treasure = null;   // { g, u: {...} }
+  /** Truhe (+ optional Icon) auf Feld (r,c). icon: { src, theme } oder null (alte showChest-Variante). */
+  function showTreasure(r, c, icon) {
+    hideCard(true);
+    const g = makeChest(), cp = U(r, c);
+    g.position.copy(cp);
+    const cl = camInUp();
+    if (cl) g.rotation.y = Math.atan2(cl.x - cp.x, cl.z - cp.z);   // Schloss zur Kamera
+    up.add(g);
+    const u = Object.assign(g.userData, { t0: time, resolve: () => {}, cheered: 0, icon: null });
+    if (icon) {
+      // ig: Position/Grösse, Ausrichtung einmal zur Kamera; spin: pendelt ±25° um die Hochachse.
+      // Beidseitig: zweites Mesh um 180° gedreht mit demselben Material → Rückseite zeigt das Bild ungespiegelt.
+      const ig = new THREE.Group(), spin = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ map: badgeTexture(null, icon.theme), transparent: true, alphaTest: 0.1 });   // weiche Kanten, Ränder ohne Tiefen-Loch
+      const geo = new THREE.PlaneGeometry(ICON_R * 2, ICON_R * 2);
+      const disc = new THREE.Mesh(geo, mat), back = new THREE.Mesh(geo, mat);
+      back.rotation.y = Math.PI;
+      disc.name = 'icon-front'; back.name = 'icon-back';
+      disc.renderOrder = back.renderOrder = 1;   // nach dem Glanz: deckt ihn ab
+      const hit = new THREE.Mesh(new THREE.CircleGeometry(ICON_R * 2, 16), new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));   // grosszügig, von beiden Seiten
+      const halo = new THREE.Sprite(glowMat());
+      halo.scale.setScalar(ICON_R * 4);
+      spin.add(disc, back, hit);
+      ig.add(halo, spin);
+      ig.visible = false;
+      up.add(ig);   // nicht in g: soll nicht mitwackeln, nur über der Truhe stehen
+      u.icon = { g: ig, spin, disc, hit, halo, aimed: false };
+      loadImg(icon.src).then((im) => {
+        if (im && treasure && treasure.u === u) { mat.map.dispose(); mat.map = badgeTexture(im, icon.theme); mat.needsUpdate = true; }
+      });
+    }
+    treasure = { g, u };
+    stepAside(r, c);
+    return u;
+  }
+  function hideCard(now = false) {
+    if (!treasure) return;
+    const { g, u } = treasure;
+    u.resolve(null);
+    if (now) { up.remove(g); if (u.icon) up.remove(u.icon.g); treasure = null; return; }
+    if (u.hideT == null) u.hideT = time;
+  }
+  const hideChest = () => hideCard(true);
+  const camPos = new THREE.Vector3();
+  function animTreasure() {
+    const { g, u } = treasure, { s, lid, glow, sparks, H } = u, t = time - u.t0;
+    let out = 1;
+    if (u.hideT != null) {
+      const h = clamp01((time - u.hideT) / 0.25);
+      out = 1 - smooth(h);
+      if (h >= 1) { up.remove(g); if (u.icon) up.remove(u.icon.g); treasure = null; return; }
+    }
+    // 1) hüpft aus dem Feld  2) Paar „öffnet“ (Jubel-Geste zur Truhe)  3) hebt ab und schwebt  4) Deckel auf, Glanz, Funken
+    const pop = clamp01((t - 0.1) / 0.45), hop = Math.max(0, Math.sin(clamp01((t - 0.1) / 0.6) * Math.PI)) * 0.05;
+    if (u.cheered === 0 && t > 0.7) { u.cheered = 1; if (!move) setAnim('cheer'); }
+    if (u.cheered === 1 && t > 1.6) { u.cheered = 2; if (!move) setAnim('idle'); }
+    const lift = smooth((t - 0.9) / 0.6);
+    s.scale.setScalar(Math.max(0.001, easeOutBack(pop) * out));
+    s.position.y = hop + lift * (0.035 + Math.sin(time * 2.2) * 0.005);
+    s.rotation.z = Math.sin(time * 1.7) * 0.07 * lift;
+    s.rotation.x = Math.sin(time * 1.3 + 1) * 0.04 * lift;
+    lid.rotation.x = -1.95 * smooth((t - 1.2) / 0.5);
+    const gk = smooth((t - 1.35) / 0.4), pulse = Math.sin(time * 6);
+    glow.material.opacity = gk * (0.55 + 0.15 * pulse);
+    glow.scale.setScalar(0.02 + 0.07 * gk * (1 + 0.08 * pulse));
     sparks.forEach((m, j) => {
       const ph = (t * 0.6 + j / sparks.length) % 1, a = j * 2.4;
-      m.position.set(Math.cos(a) * 0.018 * (1 + ph), H + ph * 0.11, Math.sin(a) * 0.014 * (1 + ph));
+      m.position.set(Math.cos(a) * 0.02 * (1 + ph), H + ph * 0.12, Math.sin(a) * 0.016 * (1 + ph));
       m.rotation.y = t * 3 + j;
       m.material.opacity = gk * (1 - ph);
     });
+    // 5) Icon steigt aus der Truhe, schwebt pulsierend darüber, schaut beim Erscheinen zur Kamera und pendelt dann ±25°
+    if (u.icon) {
+      const { g: ig, spin, halo } = u.icon, k = clamp01((t - 1.6) / 0.8);
+      ig.visible = k > 0;
+      if (ig.visible) {
+        const top = g.position.y + s.position.y + H;
+        ig.position.set(g.position.x, top + 0.01 + 0.075 * easeOutBack(k) + Math.sin(time * 2) * 0.005 * k, g.position.z);
+        ig.scale.setScalar(Math.max(0.001, smooth(k * 1.3) * (1 + 0.07 * Math.sin(time * 4) * k) * out));
+        halo.material.opacity = k * (0.4 + 0.2 * Math.sin(time * 4));
+        if (!u.icon.aimed && sceneEl.camera) {   // einmal ausrichten (sobald die Pose gültig ist), danach steht es fest im Raum
+          sceneEl.camera.getWorldPosition(camPos);
+          ig.lookAt(camPos);
+          u.icon.aimed = Number.isFinite(ig.quaternion.x);
+          if (!u.icon.aimed) ig.quaternion.identity();
+        }
+        spin.rotation.y = Math.sin(time * 0.9) * 0.44 * k + (1 - k) * Math.PI * 2;   // beim Aufsteigen eine Drehung
+      }
+    }
   }
-  const hideChest = () => { if (chest) { up.remove(chest); chest = null; } };
+  /** Bildschirm-Rechteck (DOMRect) des Icons, Startpunkt für den Flug der Vollbild-Karte in main.js. */
+  function iconRect() {
+    const ic = treasure && treasure.u.icon, cam = sceneEl.camera;
+    if (!ic || !cam || !sceneEl.canvas) return null;
+    const rect = sceneEl.canvas.getBoundingClientRect(), c = new THREE.Vector3(), e = new THREE.Vector3();
+    ic.disc.getWorldPosition(c);
+    e.setFromMatrixColumn(cam.matrixWorld, 0).multiplyScalar(ICON_R * ic.g.scale.x * ic.g.parent.matrixWorld.getMaxScaleOnAxis()).add(c);
+    const px = (v) => { v.project(cam); return [rect.left + (v.x * 0.5 + 0.5) * rect.width, rect.top + (-v.y * 0.5 + 0.5) * rect.height]; };
+    const [x, y] = px(c), [x2] = px(e), rr = Math.max(4, Math.abs(x2 - x));
+    return Number.isFinite(x + y + rr) ? new DOMRect(x - rr, y - rr, rr * 2, rr * 2) : null;
+  }
+  function showCard(r, c, { icon, theme } = {}) {
+    const u = showTreasure(r, c, { src: icon || (theme ? `assets/ui/icon-${theme}.png` : null), theme });
+    return new Promise((res) => { u.resolve = (v) => { u.resolve = () => {}; res(v); }; });
+  }
 
   // --- Bewegung (eigene rAF-Schleife; läuft auch weiter, wenn das Ziel kurz verloren ist) ---
-  let curIdx = 0, active = -1, move = null, cheerT = 0, litColor = null, time = 0, last = performance.now(), raf = 0;
+  let curIdx = 0, active = -1, reached = -1, move = null, cheerT = 0, litColor = null, time = 0, last = performance.now(), raf = 0;
   const pos = U(...ROUTE[0]);
   const headTo = (from, to) => Math.atan2(to.x - from.x, to.z - from.z);
   let heading = headTo(pos, U(...ROUTE[1])), want = heading;
   const camLocal = new THREE.Vector3();
-  function faceCamera() {
+  /** Kameraposition in `up`-Koordinaten (null, solange das Ziel unsichtbar/entartet ist). */
+  function camInUp() {
     const cam = sceneEl.camera;
-    if (!cam) return;
+    if (!cam) return null;
     cam.getWorldPosition(camLocal);
     up.updateWorldMatrix(true, false);
     up.worldToLocal(camLocal);
-    if (Number.isFinite(camLocal.x) && Number.isFinite(camLocal.z)) want = headTo(pos, camLocal);
+    return Number.isFinite(camLocal.x) && Number.isFinite(camLocal.z) ? camLocal : null;
+  }
+  function faceCamera() {
+    const c = camInUp();
+    if (c) want = headTo(pos, c);
   }
   function moveAlong(pts, step) {
     if (move) move.done();
@@ -247,14 +404,18 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     heading += angleDiff(want, heading) * Math.min(1, dt * 10);
     holder.position.copy(pos);
     holder.rotation.y = heading;
+    star.visible = debug || reached >= 4;
     star.rotation.y = time * 1.2;
     star.position.y = U(4, 4).y + 0.17 + Math.sin(time * 2) * 0.008;
-    rings.forEach((m, k) => (m.material.opacity = k === active ? 0.55 + 0.35 * Math.sin(time * 5) : 0.4));
+    rings.forEach((m, k) => {
+      m.visible = debug || k <= reached;
+      m.material.opacity = k === active ? 0.55 + 0.35 * Math.sin(time * 5) : 0.25;
+    });
     for (const d of dots) {
       d.lit.visible = d.color === litColor;
       if (d.lit.visible) d.lit.scale.setScalar(1 + 0.22 * (0.5 + 0.5 * Math.sin(time * 6)));
     }
-    if (chest) animChest();
+    if (treasure) animTreasure();
     raf = requestAnimationFrame(frame);
   }
   raf = requestAnimationFrame(frame);
@@ -263,10 +424,16 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   let tapCb = null;
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   const onTap = (e) => {
-    if (!tapCb || !isTracking() || !sceneEl.camera) return;
+    if (!sceneEl.camera) return;
     const rect = sceneEl.canvas.getBoundingClientRect();
     ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     ray.setFromCamera(ndc, sceneEl.camera);
+    const u = treasure && treasure.u;
+    if (u && u.icon && u.hideT == null) {   // Icon antippen; nach 1,5 s zählt jeder Tipp ins Kamerabild
+      if (time - u.t0 > 1.5 || (isTracking() && u.icon.g.visible && ray.intersectObject(u.icon.hit, false).length)) u.resolve(iconRect());
+      return;
+    }
+    if (!tapCb || !isTracking()) return;
     const hit = ray.intersectObjects(dots.map((d) => d.hit), false)[0];
     if (hit) tapCb(hit.object.userData.color);
   };
@@ -275,21 +442,23 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   return {
     isAr: true,
     walkTo(i, { instant = false } = {}) {
-      hideChest();
-      active = i < 4 ? i : -1;
+      hideCard(true);
+      active = -1;
+      const arrive = () => { reached = i; active = i < 4 ? i : -1; };   // Feld wird erst bei Ankunft sichtbar
       const t = stops[i];
-      if (t < 0) { pos.copy(U(...STOPS[i])); return Promise.resolve(); }   // Station nicht auf ROUTE
+      if (t < 0) { pos.copy(U(...STOPS[i])); arrive(); return Promise.resolve(); }   // Station nicht auf ROUTE
       if (instant || t === curIdx) {
         if (move) move.done();
         curIdx = t;
         pos.copy(U(...ROUTE[t]));
         faceCamera();
         heading = want;
+        arrive();
         return Promise.resolve();
       }
       const path = curIdx < t ? ROUTE.slice(curIdx + 1, t + 1) : ROUTE.slice(t, curIdx).reverse();
       curIdx = t;
-      return moveAlong(path.map((p) => U(...p)), STEP_S);
+      return moveAlong(path.map((p) => U(...p)), STEP_S).then(() => curIdx === t && arrive());   // unterbrochen: nichts aufdecken
     },
     cheer() {
       setAnim('cheer');
@@ -297,26 +466,27 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
       clearTimeout(cheerT);
       cheerT = setTimeout(() => !move && setAnim('idle'), 1900);
     },
-    showChest(r, c) {
-      hideChest();
-      const cp = U(r, c);
-      chest = makeChest();
-      chest.position.copy(cp);
-      up.add(chest);
-      // Paar tritt einen halben Schritt Richtung Brettmitte (am Ziel: Richtung Reihe 7) und schaut zur Truhe
-      const d = U(4, 4).sub(cp).setY(0);
-      if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
-      const side = cp.clone().add(d.normalize().multiplyScalar(cell * 0.6));
-      side.y = r === 4 && c === 4 ? 0 : cp.y;
-      moveAlong([side], 0.4).then(() => { if (!move) want = headTo(pos, cp); });
-    },
+    showChest(r, c) { showTreasure(r, c, null); },   // alte Variante: nur Truhe, kein Icon
     hideChest,
+    /** „Nochmals spielen“: alles wieder geheim, Paar sofort auf Start (7,7). Kamera/MindAR laufen weiter. */
+    reset() {
+      if (move) move.done();
+      clearTimeout(cheerT);
+      hideCard(true);
+      curIdx = 0; reached = -1; active = -1; litColor = null;
+      pos.copy(U(...ROUTE[0]));
+      heading = want = headTo(pos, U(...ROUTE[1]));
+      setAnim('idle');
+    },
+    showCard,
+    hideCard: () => hideCard(),
     highlightDot(color) { litColor = color ? GERMAN[color] || color : null; },
     onDotTap(cb) { tapCb = cb; },
     destroy() {
       cancelAnimationFrame(raf);
       clearTimeout(cheerT);
       if (move) move.done();
+      hideCard(true);
       document.removeEventListener('visibilitychange', onHide);
       sceneEl.canvas && sceneEl.canvas.removeEventListener('click', onTap);
       anchor.remove(root);
@@ -382,9 +552,13 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   const q = new URLSearchParams(location.search);
   const debug = q.get('debug') === '1';
   const targetSrc = (debug && q.get('target')) || 'targets.mind';             // ?debug=1&target=… nur zum Testen (z. B. 404)
-  const minCF = +(q.get('mincf') || 0.0001), beta = +(q.get('beta') || 0.001);   // Glättung, am Brett tunebar
+  // One-Euro-Filter von MindAR (Zeit in ms!): pro Matrixelement Grenzfrequenz = mincf + beta·|Ableitung|, in kHz.
+  // mincf 0.005 = 5 Hz ≙ Zeitkonstante 32 ms; beta 0 = gleiche Glättung für Drehung und Verschiebung (sonst zittert die Ecke stärker).
+  // Früher 0.0001/0.001 = 0,1 Hz ≙ 1,6 s Zeitkonstante → Einblendung schwamm hinterher. Messung und Test-URLs: docs/AR.md.
+  const num = (k, d) => (q.has(k) && Number.isFinite(+q.get(k)) ? +q.get(k) : d);
+  const minCF = num('mincf', 0.005), beta = num('beta', 0);
 
-  // Bildschirm wach halten (Publikumsjoker 30 s ≙ Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
+  // Bildschirm wach halten (Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
   let destroyed = false, wl = null, wlBusy = false;
   const lockScreen = () => {
     if (destroyed || wlBusy || document.hidden || (wl && !wl.released) || !navigator.wakeLock) return;
@@ -431,7 +605,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   <a-entity id="ar-target" mindar-image-target="targetIndex: 0"></a-entity>
 </a-scene>
 <div class="ar-scan" role="status" aria-live="polite"><div class="ar-frame"></div>
-  <p class="ar-msg">Haltet die Kamera aufs Brett<small>Brett so drehen, dass Rot oben links liegt</small></p></div>`);
+  <p class="ar-msg">Haltet die Kamera ruhig auf das Spielbrett<small>Am besten von oben, bei gutem Licht</small></p></div>`);
   const sceneEl = container.querySelector('a-scene');
   const targetEl = container.querySelector('#ar-target');
   const scan = container.querySelector('.ar-scan');
@@ -600,7 +774,8 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   try {
     const guard = (p) => Promise.race([p, ready.then(() => p)]);   // bricht ab, sobald `ready` scheitert
     if (!sceneEl.hasLoaded) await guard(once(sceneEl, 'loaded'));
-    if (sceneEl.renderer) sceneEl.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));   // iPhone hat 3: spart GPU
+    // iPhone hat 3: 1.5 reicht für die kleinen Low-Poly-Figuren und lässt der Bilderkennung (TF.js, gleiche GPU) mehr Luft
+    if (sceneEl.renderer) sceneEl.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio || 1));
     const board = buildBoard({ sceneEl, anchor: targetEl.object3D, aspect, debug, isTracking: () => tracking });
     board.then((s) => destroyed && s.destroy(), () => {});          // zu spät fertig: gleich wieder weg
     stage = await guard(board);
@@ -609,6 +784,23 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   } catch (e) {
     cleanup();
     throw e;
+  }
+  if (debug) {   // Messwerte fürs Tuning am iPhone: Video-Auflösung, Pose-Updates/s (MindAR), Bilder/s (Render)
+    const hud = Object.assign(document.createElement('div'), { className: 'ar-hud' });
+    hud.style.cssText = 'position:absolute;left:6px;bottom:6px;z-index:4;pointer-events:none;padding:3px 6px;border-radius:6px;background:rgba(0,0,0,.55);color:#fff;font:11px/1.3 ui-monospace,monospace';
+    container.append(hud);
+    let nUpd = 0, nFr = 0, t = performance.now();
+    targetEl.addEventListener('targetUpdate', () => nUpd++);
+    (function count(now) {
+      if (destroyed) return;
+      nFr++;
+      if (now - t > 1000) {
+        const v = sys().video, k = 1000 / (now - t);
+        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · mincf ${minCF} beta ${beta}`;
+        nUpd = nFr = 0; t = now;
+      }
+      requestAnimationFrame(count);
+    })(t);
   }
   tracking = targetEl.object3D.visible;
   live = true;

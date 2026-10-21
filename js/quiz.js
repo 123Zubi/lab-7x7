@@ -1,8 +1,9 @@
 // Quiz im Millionär-Stil (eigenes Design). Regeln: Plan §8.
 // Falsch → rot + deaktiviert; nach 2 Falschen → Backup-Frage (dort Falsche nur ausgegraut, ohne Rot).
-// Joker 50:50 und Publikum je einmal pro Spiel (Zustand in state.jokers).
-import { STATIONS, DOTS, LETTERS } from './content.js';
-import { state, save } from './state.js';
+// Joker 50:50 einmal pro Spiel (Zustand in state.jokers). Fragen: je Stufe 1..5 eine aus dem Pool (questions.js), siehe ensureQuestions.
+import { DOTS, LETTERS, POSES, MINI_POOL, QUESTION_COUNT } from './content.js';
+import { art, coupleSVG } from './fallback.js';
+import { state, save, PLAYED_KEY } from './state.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
@@ -10,27 +11,60 @@ const HINT = 'Antwort antippen – oder den Farbpunkt auf dem Brett.';
 const WRONG = 'Leider nicht, versucht es nochmal!';
 const SOFT = 'Nicht ganz – nehmt eine andere Antwort.'; // Backup-Frage: sanft, ohne Rot
 
-export function createQuiz({ root, modal, stage, sound }) {
+const readPlayed = () => { try { const a = JSON.parse(localStorage.getItem(PLAYED_KEY)); return Array.isArray(a) ? a : []; } catch { return []; } };
+const writePlayed = (a) => { try { localStorage.setItem(PLAYED_KEY, JSON.stringify(a)); } catch {} };
+/** Antworten mischen (A–D-Farben bleiben, nur die Texte wandern). */
+const mix = (q, a, correct) => { const p = shuffle([0, 1, 2, 3]); return { text: q, options: p.map((i) => a[i]), correct: p.indexOf(correct) }; };
+
+/** Je Stufe 1..5 eine noch nicht gespielte Frage ziehen; sind alle einer Stufe gespielt, beginnt diese Stufe von vorn.
+ *  Gezogene Fragen gelten sofort als gespielt (Key überlebt ?reset=1 und „Nochmals spielen“). Ergebnis steht in state.qs,
+ *  ein Reload behält also Fragen und Antwortreihenfolge. Fehlt questions.js, dient MINI_POOL (content.js) als Pool. */
+export async function ensureQuestions() {
+  if (Array.isArray(state.qs) && state.qs.length === QUESTION_COUNT) return;
+  const mod = await import('./questions.js').catch(() => null);
+  const pool = mod && Array.isArray(mod.POOL) && mod.POOL.length ? mod.POOL : MINI_POOL;
+  let played = readPlayed();
+  state.qs = Array.from({ length: QUESTION_COUNT }, (_, i) => {
+    const lv = i + 1;
+    let cand = pool.filter((p) => p.level === lv);
+    if (!cand.length) cand = MINI_POOL.filter((p) => p.level === lv);   // Stufe fehlt im Pool: Ersatzfrage
+    let fresh = cand.filter((p) => !played.includes(p.id));
+    if (!fresh.length) { played = played.filter((id) => !cand.some((p) => p.id === id)); fresh = cand; }   // Stufe durchgespielt: neu beginnen
+    const p = fresh[Math.floor(Math.random() * fresh.length)];
+    played.push(p.id);
+    return { id: p.id, question: mix(p.q, p.a, p.correct), backup: mix(p.backup.q, p.backup.a, p.backup.correct) };
+  });
+  writePlayed(played);
+  save();
+}
+
+export function createQuiz({ root, stage, sound }) {
   let idx = 0, active = false, busy = false, done = null, shownAt = 0;
   const early = () => performance.now() - shownAt < 400; // Klicksperre nach render: Doppeltipp auf „Zur Frage“ darf keinen Joker treffen
-  const cur = () => (state.usingBackup ? STATIONS[idx].backup : STATIONS[idx].question);
+  const cur = () => (state.usingBackup ? state.qs[idx].backup : state.qs[idx].question);
   const btns = () => [...root.querySelectorAll('.ans')];
   const wrongMsg = () => (state.usingBackup ? [SOFT, 'soft'] : [WRONG, 'bad']);
-  const say = (t, cls = '') => { const m = root.querySelector('.q-msg'); if (m) { m.textContent = t; m.className = 'q-msg ' + cls; } };
+  const SIT = { '': 'question', ok: 'right', bad: 'wrong', soft: 'wrong', pity: 'pity' };   // Meldung → Paar-Pose (POSES)
+  const say = (t, cls = '') => {
+    const m = root.querySelector('.q-msg');
+    if (!m) return;
+    m.className = 'q-msg ' + cls;
+    m.innerHTML = `${art('pose-' + POSES[SIT[cls] || 'question'], coupleSVG(), 'q-ava')}<span class="q-txt"></span>`;
+    m.lastChild.textContent = t;
+  };
 
   function render() {
     root.hidden = false; // zentral: auch nach Reload mitten in der Frage (Sprechblase übersprungen) muss das Panel sichtbar sein
     shownAt = performance.now();
-    const q = cur(), S = STATIONS[idx];
+    const q = cur();
     root.innerHTML = `<div class="quiz">
-      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${STATIONS.length} · ${S.prize} €</span>${state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}<span class="jokers"><button class="joker" data-j="fifty">50:50</button><button class="joker" data-j="audience">Publikum</button></span></div>
+      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${QUESTION_COUNT}</span>${state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}<span class="jokers"><button class="joker" data-j="fifty">50:50</button></span></div>
       <div class="q-text"><span>${q.text}</span></div>
       <div class="answers">${q.options.map((o, i) => `<button class="ans" data-i="${i}" style="--lc:${DOTS[i].hex}" aria-label="Antwort ${LETTERS[i]}: ${o}"><span class="ans-in"><span class="letter l${i}">${LETTERS[i]}</span><span class="txt">${o}</span></span></button>`).join('')}</div>
       <p class="q-msg" aria-live="polite"></p>
     </div>`;
     btns().forEach((b, i) => (b.onclick = () => pick(i)));
     root.querySelector('[data-j=fifty]').onclick = fifty;
-    root.querySelector('[data-j=audience]').onclick = audience;
     paint();
     say(...(state.wrong.length ? wrongMsg() : [HINT]));
   }
@@ -95,20 +129,6 @@ export function createQuiz({ root, modal, stage, sound }) {
     shuffle(cand).slice(0, cand.length - 1).forEach((i) => state.gone.push(i));
     state.jokers.fifty = true; save(); paint(); sound.click();
     say('50:50 – falsche Antworten sind raus!');
-  }
-
-  function audience() {
-    if (busy || early() || state.jokers.audience || !active) return;
-    state.jokers.audience = true; save(); paint(); sound.tension();
-    let t = 30;
-    modal.innerHTML = `<div class="modal-card"><h3>Fragt die Hochzeitsgäste!</h3><p>Jetzt dürfen alle im Raum mitraten. Danach entscheidet ihr.</p><div class="timer" aria-live="off">${t}</div><button class="btn btn-gold">Weiter</button></div>`;
-    modal.hidden = false;
-    const timer = setInterval(() => {
-      const el = modal.querySelector('.timer');
-      if (!el) return clearInterval(timer);
-      if (--t <= 0) { clearInterval(timer); el.textContent = 'Zeit um!'; } else el.textContent = t;
-    }, 1000);
-    modal.querySelector('button').onclick = () => { clearInterval(timer); modal.hidden = true; sound.click(); };
   }
 
   if (stage.onDotTap) stage.onDotTap((c) => pick(typeof c === 'number' ? c : DOTS.findIndex((d) => d.color === c)));

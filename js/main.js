@@ -1,9 +1,10 @@
-// Ablaufsteuerung: Start → (AR | Fallback) → Intro → 4 Stationen (Laufen, Sprechblase, Quiz, Schatz) → Finale → Abschluss.
+// Ablaufsteuerung: Start → Anleitung → (AR | Fallback) → je Station: bereit? → Frage → Paar läuft zum Feld → Karte schwebt → Vollbild-Karte
+// → nach Karte 4: letzte Frage (5) → Podest → Flitterwochen-Karte → Abschluss. (Neuer Ablauf, docs/ARCHITEKTUR.md 2026-10-21; keine Geldbeträge.)
 import { state, save, reset, isDebug } from './state.js';
-import { STATIONS, FINALE, INTRO, TOTAL } from './content.js';
+import { STATIONS, FINALE, INTRO, GUIDE, END, READY, CARDS, CARD_UI, POSES } from './content.js';
 import { sound, isMuted, toggleMute } from './sound.js';
-import { createQuiz } from './quiz.js';
-import { createFallbackStage, coupleSVG } from './fallback.js';
+import { createQuiz, ensureQuestions } from './quiz.js';
+import { createFallbackStage, coupleSVG, stationBadge, hasImg, art } from './fallback.js';
 
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -24,7 +25,7 @@ const show = (name) => ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s
 /* ---------- Konfetti ---------- */
 const cv = $('#confetti'), g = cv.getContext('2d');
 let parts = [], raf = 0;
-const COLORS = ['#f5c542', '#ffe08a', '#e5383b', '#2e9d4f', '#1e6fe0', '#ffffff', '#ff8fb1'];
+const COLORS = ['#c9a24a', '#e3c77d', '#f1dc9f', '#d8a7a0', '#ecc9c2', '#ffffff', '#b9c7a8'];
 function confetti(n = 120) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) n = Math.ceil(n / 4);
   const d = devicePixelRatio || 1;
@@ -39,7 +40,7 @@ function tick() {
   parts = parts.filter((p) => p.y < innerHeight + 20);
   for (const p of parts) {
     p.vy += 0.25; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
-    g.save(); g.translate(p.x, p.y); g.rotate(p.r); g.fillStyle = p.c; g.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); g.restore();
+    g.save(); g.translate(p.x, p.y); g.rotate(p.r); g.fillStyle = p.c; g.beginPath(); g.ellipse(0, 0, p.s / 2, p.s / 4, 0, 0, 7); g.fill(); g.restore();   // Blütenblätter
   }
   raf = parts.length ? requestAnimationFrame(tick) : 0;
 }
@@ -57,18 +58,87 @@ const card = (html, label) => new Promise((res) => {
   showPanel(`${html}<button class="btn btn-gold panel-btn">${label}</button>`);
   panel.querySelector('.panel-btn').onclick = () => { if (performance.now() - panelAt < 400) return; sound.click(); res(); };
 });
-const say = (text, label) => card(`<div class="bubble-row"><div class="avatars">${coupleSVG()}</div><div class="bubble"><p>${text}</p></div></div>`, label);
+/** Sprechblase; `sit` wählt die Paar-Pose (POSES in content.js → --img-pose-* in style.css). */
+const bubble = (html, sit) => `<div class="bubble-row">${art('pose-' + POSES[sit], coupleSVG(), 'avatars')}<div class="bubble">${html}</div></div>`;
+const say = (html, label, sit) => card(bubble(html, sit), label);
+const ICON_SOUND = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>';
+const ICON_MUTE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+const ICON_CAM = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3a1 1 0 0 1 1 1V18a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.2" r="3.4"/></svg>';
 
-async function treasure(S, i, celebrate) {
-  const last = i === 4;
-  if (celebrate) {
-    sound.fanfare(); stage.cheer(); confetti(140);
-    await sleep(1200);
-  }
-  stage.showChest(...S.pos);
-  const line = last ? FINALE.text : 'Hebt dieses Plättchen hoch:';
-  const prize = last ? `Hauptgewinn: ${S.name}, ${S.prize} €` : `${S.name}, ${S.prize} €`;
-  await card(`<div class="treasure"><div class="t-icon" aria-hidden="true">${S.icon}</div><p class="t-line">${line}</p><p class="t-prize">${prize}</p><p class="t-feld">Feld: ${S.feld}</p></div>`, last ? 'Zum Abschluss' : 'Weiter zur nächsten Station');
+/* ---------- Schatz-Karten ---------- */
+// Bilder werden automatisch verwendet, sobald sie existieren: genau eine Prüfung pro Datei und Seitenaufruf, Ergebnis gecacht.
+// Fehlt eine Datei, kostet das einmalig eine 404-Zeile in der Konsole, danach nie wieder (bis zum nächsten Laden).
+const probed = new Map();
+const probe = (url) => {
+  if (!probed.has(url)) probed.set(url, new Promise((res) => { const i = new Image(); i.onload = () => res(url); i.onerror = () => res(null); i.src = url; }));
+  return probed.get(url);
+};
+const stop = (k) => (k < 4 ? STATIONS[k] : FINALE);
+// Gefundenes Icon gilt überall (Badges lesen --img-<theme>, siehe style.css)
+// absolute URL: eine relative URL in einer Inline-Variable löst der Browser sonst gegen css/ auf
+const iconImg = (theme) => probe(`assets/ui/icon-${theme}.png`).then((u) => { if (u) document.documentElement.style.setProperty('--img-' + theme, `url("${new URL(u, location.href).href}")`); return u; });
+const cardImgs = (theme) => Promise.all([probe(`assets/cards/${theme}.jpg`), iconImg(theme)]);
+const HEART = '<svg class="cf-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5c-5.4-3.7-8.5-6.5-8.5-10a4.6 4.6 0 0 1 8.5-2.5 4.6 4.6 0 0 1 8.5 2.5c0 3.5-3.1 6.3-8.5 10z"/></svg>';
+
+/** Schatz auf dem Feld (Truhe + schwebendes Icon), bis er angetippt wird. Liefert (Fallback) die Position des Icons für den Flug. */
+async function treasureScene(k) {
+  const S = stop(k);
+  if (!stage.showCard) return null;   // Bühne ohne Schatz-Szene (älteres ar.js): direkt zur Vollbild-Karte
+  const icon = await iconImg(S.theme);   // Kartenbild nur vorladen, die Truhe wartet nicht darauf
+  probe(`assets/cards/${S.theme}.jpg`);
+  showPanel(`${bubble(`<p>${S.bubble}</p><p class="b-ask">${CARDS[k].lift}</p>`, k < 4 ? 'arrive' : 'finale')}<p class="tap-hint">${READY.tap}</p>`);
+  const from = await stage.showCard(...S.pos, { icon, theme: S.theme });
+  hidePanel();
+  return from || null;
+}
+
+/** Vollbild-Karte. Schritt 'back': fliegt von `from` (Icon) zur Mitte und zeigt die Rückseite, bis sie angetippt wird.
+ *  Schritt 'open': 3D-Flip auf die Vorderseite (Glöckchen, Goldfunken; Hauptschatz mit Konfetti), dann „Weiter“. Beide Schritte überstehen einen Reload. */
+async function openCard(k, from) {
+  const C = CARDS[k], S = stop(k), grand = k === 4, host = $('#card');
+  const [[img], back] = await Promise.all([cardImgs(S.theme), probe('assets/cards/rueckseite.jpg')]);
+  const sparks = Array.from({ length: grand ? 22 : 12 }, (_, j) => `<span class="cf-spark" style="--a:${(360 / (grand ? 22 : 12)) * j}deg;--d:${(j % 4) * 60}ms"></span>`).join('');
+  const motes = Array.from({ length: 10 }, (_, j) => `<span class="cf-mote" style="--x:${8 + j * 9}%;--t:${3 + (j % 4)}s;--d:${(j * 0.37).toFixed(2)}s"></span>`).join('');
+  host.innerHTML = `<div class="cf-motes" aria-hidden="true">${motes}</div>
+  <div class="cf-stage${grand ? ' grand' : ''}" role="dialog" aria-modal="true" aria-labelledby="cf-title">
+    <div class="cf-card"><div class="cf-flip">
+      <div class="cf-face cf-back${back ? ' has-img' : ''}">${back ? `<img src="${back}" alt="">` : '<span class="cf-mono">M<i>&amp;</i>F</span>'}</div>
+      <div class="cf-face cf-front${img ? ' has-img' : ''}">
+        <div class="cf-art">${img ? `<img src="${img}" alt="">` : `<span class="cf-rays" aria-hidden="true"></span>${stationBadge(k, 'cf-badge')}`}</div>
+        <div class="cf-text"><p class="cf-kicker">${C.kicker}</p><h2 class="cf-title" id="cf-title">${C.title}</h2><p class="cf-body">${C.text}</p></div>
+      </div>
+    </div><div class="cf-sparks" aria-hidden="true">${sparks}</div></div>
+    <div class="cf-under">
+      <p class="cf-tap">${READY.flip}</p>
+      <p class="cf-ribbon">${HEART}<span>${C.lift}</span></p>
+      <button class="btn btn-gold cf-btn">${CARD_UI.next}</button>
+    </div>
+  </div>`;
+  const el = host.querySelector('.cf-flip'), cardEl = host.querySelector('.cf-card');
+  host.className = 'overlay card-overlay';
+  host.hidden = false;
+  const tapWait = (target, ms) => new Promise((res) => { const t0 = performance.now(); target.onclick = () => { if (performance.now() - t0 < ms) return; target.onclick = null; res(); }; });
+
+  if (step() === 'back') {
+    cardEl.setAttribute('role', 'button'); cardEl.setAttribute('aria-label', READY.flip); cardEl.tabIndex = 0;
+    if (from) {
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--fx', from.left + from.width / 2 - (r.left + r.width / 2) + 'px');
+      el.style.setProperty('--fy', from.top + from.height / 2 - (r.top + r.height / 2) + 'px');
+      el.style.setProperty('--fs', Math.max(0.08, from.width / r.width));
+      host.classList.add('fly');
+    } else host.classList.add('appear');
+    sound.click();
+    await tapWait(host.querySelector('.cf-stage'), 650);   // zweiter Tipp: irgendwo auf Karte oder Hinweis
+    setStep('open');
+    cardEl.removeAttribute('role'); cardEl.removeAttribute('aria-label'); cardEl.tabIndex = -1;
+    host.classList.add('flipped');
+    setTimeout(sound.bell, 80);
+    if (grand) { sound.fanfare(); setTimeout(() => confetti(160), 300); setTimeout(() => confetti(100), 1300); }
+  } else host.classList.add('flipped', 'instant');   // Reload mit offener Karte
+
+  await tapWait(host.querySelector('.cf-btn'), 700);
+  sound.click(); host.hidden = true; host.className = 'overlay card-overlay'; host.innerHTML = '';
 }
 
 /* ---------- Fortschrittsanzeige ---------- */
@@ -78,52 +148,84 @@ function updateHud() {
     const curP = i < 4 ? state.station === i + 1 : state.station === 5;
     return `<li class="${doneP ? 'done' : ''} ${curP ? 'cur' : ''} ${i === 4 ? 'star' : ''}"></li>`;
   }).join('');
-  $('#btn-sound').textContent = isMuted() ? '🔇' : '🔊';
+  $('#btn-sound').innerHTML = isMuted() ? ICON_MUTE : ICON_SOUND;
 }
 
 /* ---------- Spielablauf ---------- */
-async function run(resumed) {
-  if (state.station === 0) {
+// Fortschritt: station 1..4 = aktuelle Frage/Station, 5 = letzte Frage + Finale (Podest); step = 'ready' | 'quiz' | 'card' (Truhe/Icon) | 'back' (Karte zeigt Rückseite) | 'open' (Vorderseite).
+const step = () => state.step || 'ready';
+const setStep = (st) => { state.step = st; save(); };
+/** Wo das Paar gerade steht (Index für walkTo, -1 = Start). Bei 'card' steht es noch an der vorigen Station: der Lauf (auch zum Podest) folgt. */
+const coupleAt = () => { const k = Math.min(state.station, 5) - 1; return ['back', 'open'].includes(step()) ? k : k - 1; };
+
+async function run() {
+  if (state.station === 0) { state.station = 1; setStep('ready'); }
+  updateHud();
+  if (coupleAt() >= 0) await stage.walkTo(coupleAt(), { instant: true });
+  while (!state.done) {
+    const k = state.station - 1, fin = k === 4;
+    let from = null;
     updateHud();
-    await say(INTRO, 'Los geht’s');
-    state.station = 1; save();
-  }
-  while (state.station <= 4) {
-    const i = state.station - 1, S = STATIONS[i];
-    hidePanel(); updateHud();
-    await stage.walkTo(i, { instant: resumed });
-    if (!state.solved.includes(i)) {
-      const midQuiz = state.usingBackup || state.wrong.length || state.gone.length;
-      if (!(resumed && midQuiz)) await say(S.bubble, 'Zur Frage');
-      await quiz.ask(i);
-      stage.highlightDot && stage.highlightDot(null);
-      await treasure(S, i, true);
-    } else {
-      await treasure(S, i, false);
+    if (step() === 'ready') {
+      const first = k === 0;
+      await say(first ? `<p>${INTRO}</p><p class="b-ask">${READY.first}</p>` : `<p class="b-ask">${fin ? READY.last : READY.next}</p>`, first ? READY.go : READY.yes, first ? 'intro' : 'ready');
+      setStep('quiz');
     }
-    Object.assign(state, { station: state.station + 1, wrongCount: 0, usingBackup: false, wrong: [], gone: [] });
+    if (step() === 'quiz' && state.solved.includes(k)) setStep('card');   // Reload kurz nach der richtigen Antwort: nicht nochmal fragen
+    if (step() === 'quiz') {
+      await quiz.ask(k);
+      stage.highlightDot && stage.highlightDot(null);
+      setStep('card');
+      sound.fanfare(); stage.cheer(); confetti(140);
+      await sleep(1300);
+    }
+    if (step() !== 'open' && step() !== 'back') {
+      if (step() !== 'card') setStep('card');
+      hidePanel();
+      // Wechselt die Bühne mitten im Lauf oder während der Truhe (Kamera fällt aus / kommt zurück), auf der neuen Bühne wiederholen.
+      for (let s = null; s !== stage;) { s = stage; await s.walkTo(k); }
+      stage.cheer();
+      for (let s = null; s !== stage;) { s = stage; from = await treasureScene(k); }
+      setStep('back');
+    }
+    hidePanel();
+    stage.hideCard && stage.hideCard();
+    await openCard(k, from);
+    if (fin) { state.done = true; save(); break; }
+    Object.assign(state, { station: state.station + 1, step: 'ready', wrongCount: 0, usingBackup: false, wrong: [], gone: [] });
     save();
-    resumed = false;
   }
-  hidePanel(); updateHud();
-  await stage.walkTo(4, { instant: resumed });
-  await say(FINALE.bubble, 'Weiter');
-  await treasure(FINALE, 4, true);
-  state.done = true; save();
   showEnd();
 }
 
+/** „Nochmals spielen“: Fortschritt, Fragen, Joker, Karten zurück; Modus und wantAr bleiben. Ohne Reload zurück zur Anleitung.
+ *  Die alte Bühne wurde in showEnd zerstört (Kamera aus); startGame baut eine frische Bühne mit dem Paar auf Start (7,7) und
+ *  zeigt wieder die Anleitung, unter der die Kamera neu startet. So gibt es keinen Restzustand aus Runde 1. */
+function playAgain() {
+  sound.click();
+  endTimers.forEach(clearTimeout); endTimers = [];   // Konfetti-Nachschub des Abschlusses stoppen
+  const { mode, wantAr } = state;
+  reset();
+  Object.assign(state, { mode, wantAr, step: 'ready' });
+  save();
+  $('#card').hidden = true; $('#card').innerHTML = '';
+  parts = [];
+  startGame((wantAr ?? mode === 'ar') ? 'ar' : 'fallback', true);   // neue Bühne startet beim Start (7,7), die alte ist seit showEnd weg
+}
+
+let endTimers = [];
 function showEnd() {
   hidePanel();
   if (stage && stage.destroy) stage.destroy();
   retryBtn.hidden = true;
   $('#end-couple').innerHTML = coupleSVG();
-  $('#end-list').innerHTML = [...STATIONS, FINALE].map((s) => `<li><span>${s.icon} ${s.name}</span><b>${s.prize} €</b></li>`).join('');
-  $('#end-total').textContent = TOTAL + ' €';
+  const list = [...STATIONS, FINALE];
+  const paint = () => ($('#end-list').innerHTML = list.map((s, k) => `<li>${stationBadge(k)}<span class="p-name">${s.name}</span></li>`).join(''));
+  paint(); Promise.all(list.map((s) => iconImg(s.theme))).then(paint);
   show('end');
   sound.fanfare();
   confetti(180);
-  for (let k = 1; k <= 5; k++) setTimeout(() => confetti(90), k * 1800);
+  endTimers = [1, 2, 3, 4, 5].map((k) => setTimeout(() => confetti(90), k * 1800));
 }
 
 /* ---------- Start / Modus ---------- */
@@ -145,13 +247,24 @@ const AR_MSG = {
 };
 const arMsg = (e) => AR_MSG[e && e.name] || 'Die Kamera ist gerade nicht verfügbar – wir spielen ohne Kamera weiter.';
 
-async function tryAr() {
+// Fortschrittsanzeige für den Kamerastart: das Lade-Overlay (Reload, „Kamera nochmal versuchen“) oder der Anleitungs-Screen.
+const overlayView = {
+  btn: $('#btn-cancel-ar'),
+  text: (t) => ($('#loading-text').textContent = t),
+  phase() {},
+  open() { this.btn.className = 'btn btn-ghost'; $('#loading').hidden = false; },
+  slow() { this.btn.className = 'btn btn-gold'; },
+  close() { this.btn.className = 'btn btn-ghost'; this.text('Kamera wird gestartet …'); $('#loading').hidden = true; },
+  fail(e) { if (e.name !== 'Cancelled') toast(arMsg(e)); },
+};
+
+async function tryAr(view = overlayView) {
   // 45 s Zeitbudget – die Zeit im Kamera-Dialog zählt nicht: ar.js meldet Phasen, bei 'permission' steht die Uhr,
   // nach erteilter Erlaubnis ('starting') beginnt sie neu.
   const AR_TIMEOUT = 45000, SHOW_CANCEL = 8000;
-  const PHASE = { loading: 'Lade 3D-Welt …', permission: 'Bitte Kamera erlauben', starting: 'Kamera wird gestartet …' };
+  const PHASE = { loading: GUIDE.status.loading, permission: GUIDE.status.permission, starting: GUIDE.status.starting };
   const STEPS = [[12000, 'Das dauert länger als sonst …'], [30000, 'Fast fertig …']];
-  const text = (t) => ($('#loading-text').textContent = t);
+  const text = (t) => view.text(t);
   let cancel, timeUp, timers = [], lost = false;
   const cancelled = new Promise((_, rej) => (cancel = () => rej(named('Cancelled', 'abgebrochen'))));
   const timeout = new Promise((_, rej) => (timeUp = () => rej(named('Timeout', 'Zeitüberschreitung'))));
@@ -159,15 +272,13 @@ async function tryAr() {
   const arm = () => { disarm(); timers = [setTimeout(timeUp, AR_TIMEOUT), ...STEPS.map(([ms, t]) => setTimeout(() => text(t), ms))]; };
   const onPhase = (p) => {
     if (lost || !PHASE[p]) return;
-    text(PHASE[p]);
+    text(PHASE[p]); view.phase(p);
     if (p === 'permission') disarm(); else arm();
   };
-  const btn = $('#btn-cancel-ar');
-  btn.className = 'btn btn-ghost';
-  text(PHASE.loading);
-  $('#loading').hidden = false;
-  btn.onclick = cancel;
-  const slow = setTimeout(() => (btn.className = 'btn btn-gold'), SHOW_CANCEL);
+  text(PHASE.loading); view.phase('loading');
+  view.open();
+  view.btn.onclick = () => { sound.click(); cancel(); };
+  const slow = setTimeout(() => view.slow(), SHOW_CANCEL);
   arm();
   // Eigener Host-Container: eine zu spät fertige AR-Bühne räumt nur sich selbst weg, nicht den Fallback.
   const host = document.createElement('div');
@@ -183,14 +294,58 @@ async function tryAr() {
     lost = true;
     console.warn('AR nicht verfügbar:', e);
     host.remove();
-    if (e.name !== 'Cancelled') toast(arMsg(e));
+    view.fail(e);
     return null;
   } finally {
     clearTimeout(slow); disarm();
-    btn.className = 'btn btn-ghost'; text('Kamera wird gestartet …');
-    $('#loading').hidden = true;
+    view.close();
   }
 }
+
+/* ---------- Anleitungs-Screen ---------- */
+const guide = (() => {
+  const root = $('#guide'), st = $('#guide-status'), go = $('#btn-go'), cancelBtn = $('#guide-cancel');
+  const STEP = { loading: 1, permission: 2, starting: 3, ready: 4 };
+  const setStatus = (t, kind = 'busy', step = 0) => {
+    st.querySelector('.g-text').textContent = t;
+    st.dataset.kind = kind;
+    st.style.setProperty('--step', step);
+  };
+  const view = {
+    btn: cancelBtn,
+    text: (t) => setStatus(t, 'busy', +st.style.getPropertyValue('--step') || 1),
+    phase: (p) => st.style.setProperty('--step', STEP[p] || 1),
+    open() { cancelBtn.hidden = false; },
+    slow() {},
+    close() { cancelBtn.hidden = true; },
+    fail(e) { setStatus(e.name === 'Cancelled' ? GUIDE.status.cancelled : arMsg(e), 'off'); },
+  };
+  return {
+    view,
+    open(withCam) {
+      $('#g-kicker').textContent = GUIDE.kicker;
+      $('#guide-title').textContent = GUIDE.title;
+      $('#g-intro').textContent = GUIDE.intro;
+      $('#g-steps-title').textContent = GUIDE.stepsTitle;
+      $('#g-steps').innerHTML = GUIDE.steps.map((t) => `<li>${t}</li>`).join('');
+      $('#g-tips-title').textContent = GUIDE.tipsTitle;
+      $('#g-tips').innerHTML = GUIDE.tips.filter((t) => withCam || !t.ar).map((t) => `<li>${t.text}</li>`).join('');
+      $('#g-warn').textContent = GUIDE.warn;
+      cancelBtn.textContent = GUIDE.cancel;
+      go.textContent = GUIDE.go;
+      go.disabled = true;   // ready() gibt frei, sobald die Bühne steht – auch ohne Kamera (sonst verpufft der erste Tipp)
+      if (withCam) setStatus(GUIDE.status.loading, 'busy', 1); else setStatus(GUIDE.status.plain, 'plain');
+      root.hidden = false;
+      root.querySelector('.guide-scroll').scrollTop = 0;
+    },
+    /** Bühne steht (AR bereit oder Fallback): Button frei, wartet auf „Los geht’s“. */
+    ready(isAr) {
+      if (isAr) setStatus(GUIDE.status.ready, 'ready', 4);
+      go.disabled = false;
+      return new Promise((res) => (go.onclick = () => { sound.click(); go.onclick = null; root.hidden = true; res(); }));
+    },
+  };
+})();
 
 async function fallbackStage() {
   const host = document.createElement('div');
@@ -208,7 +363,7 @@ function useStage(next) {
   document.body.classList.toggle('mode-ar', !!next.isAr);
   if (dotCb && next.onDotTap) next.onDotTap(dotCb);
   if (old) {
-    if (state.station > 0) next.walkTo(Math.min(state.station, 5) - 1, { instant: true });
+    if (coupleAt() >= 0) next.walkTo(coupleAt(), { instant: true });
     if (old.destroy) old.destroy();
     if (old.host) old.host.remove();
   }
@@ -219,11 +374,11 @@ function useStage(next) {
 // AR gewünscht, aber gerade im Fallback (Fehler, Abbruch, Kamera ausgefallen): Kamera nochmal versuchen, Spielstand bleibt.
 const retryBtn = document.createElement('button');
 retryBtn.className = 'chip';
-retryBtn.textContent = '📷 Kamera nochmal versuchen';
-retryBtn.style.cssText = 'z-index:6;font:inherit;font-size:13px;cursor:pointer';   // Platz des Brett-Tipps (#hint), erst wenn der weg ist
+retryBtn.innerHTML = ICON_CAM + 'Kamera nochmal versuchen';
+retryBtn.classList.add('chip-btn');
 retryBtn.hidden = true;
 $('#screen-game').append(retryBtn);
-const updateRetry = () => (retryBtn.hidden = !(state.wantAr && stage && !stage.isAr && !state.done && $('#hint').hidden));
+const updateRetry = () => (retryBtn.hidden = !(state.wantAr && stage && !stage.isAr && !state.done));
 retryBtn.onclick = async () => {
   sound.click();
   retryBtn.hidden = true;
@@ -238,24 +393,25 @@ retryBtn.onclick = async () => {
 async function arFatal() {
   if (!stage || !stage.isAr) return;
   toast('Die Kamera ist ausgefallen – wir spielen ohne Kamera weiter.');
+  if (!$('#guide').hidden) guide.view.fail(named('ArError'));   // Anleitung noch offen: „Kamera bereit“ stimmt nicht mehr
   const fb = await fallbackStage();
   if (state.done) { fb.destroy(); fb.host.remove(); return; }
   useStage(fb);
 }
 
-async function startGame(mode) {
+async function startGame(mode, guided = false) {
   show('game');
   state.wantAr = mode === 'ar'; save();
   document.body.classList.toggle('mode-ar', mode === 'ar');
-  let s = mode === 'ar' ? await tryAr() : null;
-  if (!s) {
-    s = await fallbackStage();
-    $('#hint').hidden = false;
-    setTimeout(() => { $('#hint').hidden = true; updateRetry(); }, 9000);
-  }
+  if (guided) guide.open(mode === 'ar');   // Kamera startet darunter, die Anleitung deckt die Bühne ab
+  let s = mode === 'ar' ? await tryAr(guided ? guide.view : overlayView) : null;
+  const plain = !s;
+  if (plain) s = await fallbackStage();
   useStage(s);
-  quiz = createQuiz({ root: panel, modal: $('#modal'), stage: live, sound });
-  run(state.station > 0).catch((e) => { console.error(e); toast('Etwas ist schiefgelaufen – wir laden neu.'); setTimeout(() => location.reload(), 2500); });
+  quiz = createQuiz({ root: panel, stage: live, sound });
+  await ensureQuestions();   // 5 Fragen ziehen (oder die gespeicherten dieses Spiels behalten)
+  if (guided) await guide.ready(!plain);
+  run().catch((e) => { console.error(e); toast('Etwas ist schiefgelaufen – wir laden neu.'); setTimeout(() => location.reload(), 2500); });
 }
 
 function setupDebug() {
@@ -270,7 +426,7 @@ function setupDebug() {
     reset();
     if (n !== 'x') {
       const k = +n;
-      Object.assign(state, { mode, station: Math.min(k, 5), solved: Array.from({ length: Math.max(0, Math.min(k, 5) - 1) }, (_, j) => j), done: k === 6 });
+      Object.assign(state, { mode, station: Math.min(k, 5), step: 'ready', solved: Array.from({ length: Math.max(0, Math.min(k, 5) - 1) }, (_, j) => j), done: k === 6 });
       save();
     }
     location.reload();
@@ -302,8 +458,15 @@ async function setupOffline() {
 function boot() {
   $('#start-couple').innerHTML = coupleSVG();
   if (IN_APP.test(navigator.userAgent)) $('#inapp-note').hidden = false;
-  $('#btn-ar').onclick = () => { sound.click(); startGame('ar'); };
-  $('#btn-plain').onclick = () => { sound.click(); startGame('fallback'); };
+  $('#btn-ar').onclick = () => { sound.click(); startGame('ar', true); };
+  $('#btn-plain').onclick = () => { sound.click(); startGame('fallback', true); };
+  document.querySelectorAll('[data-img]').forEach((el) => el.classList.toggle('has-img', hasImg(el.dataset.img)));
+  document.body.classList.toggle('has-paper', hasImg('paper'));   // Papier bringt eigene Eck-Ornamente mit → CSS-Rahmen aus
+  ['start', 'guide', 'end'].forEach((k) => document.body.classList.toggle('scene-' + k, hasImg('bg-' + k)));   // Szenen-Layout nur mit Bild
+  $('#end-kicker').textContent = END.kicker; $('#end-title').textContent = END.title;
+  $('#btn-again-text').textContent = END.again;
+  $('#btn-again').onclick = playAgain;
+  $('#end-list-title').textContent = END.list; $('#end-wish').textContent = END.wish; $('#end-note').textContent = END.note;
   $('#btn-sound').onclick = () => { toggleMute(); updateHud(); };
   if (isDebug()) setupDebug();
   setupOffline();

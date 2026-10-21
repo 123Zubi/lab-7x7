@@ -1,8 +1,11 @@
 // Fallback-Bühne (2D über assets/board.jpg) – implementiert die Stage-Schnittstelle aus dem Architektur-Vertrag:
 //   walkTo(i, {instant}) → Promise   i: 0..3 = Station 1..4, 4 = Ziel (Podest); instant = ohne Animation platzieren
 //   cheer(), showChest(r, c), highlightDot('red'|'green'|'yellow'|'blue'|null), onDotTap(cb(color)), destroy()
+//   showCard(r, c, {img, icon, theme}) → Promise<DOMRect|null>: Truhe hüpft aus dem Feld, das Paar öffnet sie, sie schwebt, der Deckel
+//   klappt auf, das Stations-Icon steigt heraus und schwebt; Tipp aufs Icon (nach 1,5 s auch irgendwo aufs Brett) löst auf
+//   (Rect des Icons = Startpunkt für den Kartenflug). hideCard() räumt Truhe + Icon weg. `img` (Vollbild-Karte) nutzt main.js.
 import { STATIONS, FINALE, DOTS } from './content.js';
-import { isDebug } from './state.js';
+import { isDebug, state } from './state.js';
 import { ROUTE, BOARD_IMAGE } from './route.js';
 
 const STEP_MS = 320;
@@ -15,6 +18,23 @@ const loadImg = (src) => new Promise((res) => { const i = new Image(); i.onload 
 
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html) n.innerHTML = html; return n; };
 const at = (n, [r, c]) => { n.style.left = ((c - 0.5) / 7) * 100 + '%'; n.style.top = ((r - 0.5) / 7) * 100 + '%'; };
+
+/** Bild-Platzhalter: Ist in style.css `--img-<name>` gesetzt (z. B. url("../assets/ui/chest.png")), zeigt der Slot das Bild statt des SVG. */
+export const hasImg = (name) => getComputedStyle(document.documentElement).getPropertyValue('--img-' + name).trim() !== 'none';
+export const art = (name, svg, cls = '') => `<span class="art art-${name}${hasImg(name) ? ' has-img' : ''} ${cls}" aria-hidden="true">${svg}</span>`;
+
+// Feine Linien-Icons für die Stationen (Reihenfolge = STATIONS, dann Finale). Später durch icon-*.png ersetzbar.
+const ICON = (d) => `<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+export const STATION_KEYS = ['weihnachtsmarkt', 'kino', 'dinner', 'spieleabend', 'flitterwochen'];
+const ICONS = [
+  ICON('<path d="M14 21h16v11a6 6 0 0 1-6 6h-4a6 6 0 0 1-6-6z"/><path d="M30 24h2.5a3.5 3.5 0 0 1 0 7H30"/><path d="M19 17c-1.5-2 1.5-3 0-5M25 17c-1.5-2 1.5-3 0-5"/><path d="M36 9l.9 1.9 2.1.3-1.5 1.5.4 2.1-1.9-1-1.9 1 .4-2.1-1.5-1.5 2.1-.3z" fill="currentColor" stroke-width="1"/>'),
+  ICON('<path d="M12 20h24l-3 19H15z"/><path d="M19 20l1 19M29 20l-1 19"/><circle cx="16" cy="17" r="3.2"/><circle cx="22" cy="14.5" r="3.6"/><circle cx="28.5" cy="15" r="3.4"/><circle cx="33" cy="18" r="2.8"/>'),
+  ICON('<path d="M17 22h6v16h-6zM27 25h6v13h-6z"/><path d="M20 22v-2M30 25v-2"/><path d="M20 19c-2-2.5 0-5 0-7 1.8 2 2.6 4.6 0 7zM30 22c-2-2.5 0-5 0-7 1.8 2 2.6 4.6 0 7z" fill="currentColor" stroke-width="1"/><path d="M13 38h24"/>'),
+  ICON('<rect x="13" y="13" width="22" height="22" rx="4.5"/><circle cx="19" cy="19" r="1.7" fill="currentColor"/><circle cx="29" cy="19" r="1.7" fill="currentColor"/><circle cx="24" cy="24" r="1.7" fill="currentColor"/><circle cx="19" cy="29" r="1.7" fill="currentColor"/><circle cx="29" cy="29" r="1.7" fill="currentColor"/>'),
+  ICON('<path d="M24 38V22"/><path d="M24 22c-3-4-8-5-12-3 4 0 7 1.5 9 4M24 22c3-4 8-5 12-3-4 0-7 1.5-9 4M24 22c-1-4-4-7-8-8 3 2 5 4.5 6 8M24 22c1-4 4-7 8-8-3 2-5 4.5-6 8"/><path d="M14 38c4-2 16-2 20 0"/><path d="M33 10l4 1.5 3-2.5-1 3.5 2.5 2"/>'),
+];
+/** Rundes Stations-Badge (Goldrahmen + Linien-Icon), k = 0..3 Station, 4 = Finale. */
+export const stationBadge = (k, cls = '') => art(STATION_KEYS[k], ICONS[k], 'badge ' + cls);
 
 /** Brautpaar als SVG (Bräutigam im Anzug, Braut im Kleid) – auch für Start-/Sprechblasen genutzt. */
 export const coupleSVG = () => `<svg class="couple-svg" viewBox="0 0 100 130" aria-hidden="true">
@@ -53,6 +73,14 @@ const CHEST_SVG = `<svg viewBox="0 0 64 56" aria-hidden="true"><rect x="6" y="24
 <path d="M6 26 Q6 8 32 8 Q58 8 58 26Z" fill="#a85e17" stroke="#4a2605" stroke-width="2"/><rect x="6" y="24" width="52" height="5" fill="#f5c542"/>
 <rect x="14" y="14" width="6" height="38" fill="#f5c542"/><rect x="44" y="14" width="6" height="38" fill="#f5c542"/>
 <rect x="27" y="22" width="10" height="13" rx="2" fill="#ffe08a" stroke="#4a2605" stroke-width="1.5"/><circle cx="32" cy="28" r="2" fill="#4a2605"/></svg>`;
+
+// Truhe mit eigenem Deckel (klappt per CSS auf); innen ein Goldschein, der beim Öffnen sichtbar wird.
+const TREASURE_SVG = `<svg viewBox="0 0 64 60" aria-hidden="true">
+<ellipse class="glowin" cx="32" cy="31" rx="21" ry="7" fill="#fff1b8"/>
+<g class="body"><rect x="6" y="30" width="52" height="26" rx="4" fill="#8a4b12" stroke="#4a2605" stroke-width="2"/><rect x="6" y="30" width="52" height="5" fill="#e3c77d"/>
+<rect x="14" y="30" width="6" height="26" fill="#e3c77d"/><rect x="44" y="30" width="6" height="26" fill="#e3c77d"/>
+<rect x="27" y="31" width="10" height="12" rx="2" fill="#f1dc9f" stroke="#4a2605" stroke-width="1.5"/><circle cx="32" cy="37" r="1.8" fill="#4a2605"/></g>
+<g class="lid"><path d="M6 32 Q6 13 32 13 Q58 13 58 32Z" fill="#a85e17" stroke="#4a2605" stroke-width="2"/><rect x="14" y="16" width="6" height="16" fill="#e3c77d"/><rect x="44" y="16" width="6" height="16" fill="#e3c77d"/></g></svg>`;
 
 export async function createFallbackStage(container) {
   const debug = isDebug();
@@ -94,6 +122,15 @@ export async function createFallbackStage(container) {
     return b;
   });
 
+  // Geheimfelder: erst sichtbar, wenn das Paar dort steht; gelöste bleiben dezent markiert. ?debug=1 zeigt alle.
+  let here = -1, going = -1;   // going: Ziel des laufenden Wegs – dessen Feld bleibt geheim, bis das Paar ankommt
+  const marks = STOPS.slice(0, 4).map((p) => { const m = el('div', 'fb-mark' + (debug ? ' debug' : '')); at(m, p); layer.append(m); return m; });
+  const paintMarks = () => marks.forEach((m, k) => {
+    const solved = state.solved.includes(k);
+    m.classList.toggle('here', k === here);             // Feld „offen“, solange das Paar dort steht
+    m.classList.toggle('solved', solved && k !== here && k !== going);
+  });
+
   const couple = el('div', 'fb-couple', `<div class="couple-in">${coupleSVG()}</div>`);
   const coupleIn = couple.firstChild;
   layer.append(couple);
@@ -102,9 +139,44 @@ export async function createFallbackStage(container) {
 
   let chest = null;
   const hideChest = () => { if (chest) { chest.remove(); chest = null; } };
+  const stepAside = () => { // Paar tritt knapp eine Feldbreite Richtung Brettmitte neben die Truhe: beide Figuren und die Truhe bleiben sichtbar
+    const dc = Math.sign(4 - cur[1]) || 1;
+    coupleIn.style.setProperty('--ax', dc * 0.95); coupleIn.style.setProperty('--ay', 0.3);
+  };
+
+  const cheer = () => { couple.classList.add('cheer'); setTimeout(() => couple.classList.remove('cheer'), 1900); };
+  let card = null, cardDone = null, anyTap = null, cheerT = 0;
+  function hideCard() {
+    clearTimeout(cheerT);
+    if (card) { card.remove(); card = null; here = -1; paintMarks(); }
+    if (anyTap) { container.removeEventListener('click', anyTap); anyTap = null; }
+    if (cardDone) { const d = cardDone; cardDone = null; d(); }
+  }
+  function showCard(r, c, { icon = null, theme } = {}) {
+    hideChest(); hideCard();
+    paintMarks();
+    const k = Math.max(0, STATION_KEYS.indexOf(theme));
+    card = el('div', 'fb-treasure');
+    card.innerHTML = `<span class="ring"></span>${art('chest', TREASURE_SVG, 'fb-tchest')}
+      <button class="fb-ticon" aria-label="Schatz antippen"><span class="fb-ticon-in badge${icon ? ' has-img' : ''}">${icon ? `<img src="${icon}" alt="" draggable="false">` : ICONS[k]}</span></button>`;
+    for (let j = 0; j < 10; j++) { const sp = el('span', 'spark'); sp.style.setProperty('--a', j * 36 + 'deg'); card.append(sp); }
+    at(card, [r, c]);
+    layer.append(card);
+    stepAside();
+    cheerT = setTimeout(cheer, 700);   // das Paar „öffnet“ die Truhe
+    return new Promise((res) => {
+      const me = card;
+      const done = () => { const rect = me.querySelector('.fb-ticon-in').getBoundingClientRect(); hideCard(); res(rect); };
+      cardDone = () => res(null);
+      const t0 = performance.now();   // Icon steigt erst ab 1,7 s auf: vorher zählt ein Tipp darauf nicht
+      me.querySelector('.fb-ticon').addEventListener('click', (e) => { if (performance.now() - t0 < 1700) return; e.stopPropagation(); done(); });
+      setTimeout(() => { if (card !== me) return; anyTap = done; container.addEventListener('click', anyTap); }, 1500);   // nach 1,5 s zählt jeder Tipp aufs Brett
+    });
+  }
 
   const fit = () => {
-    const W = container.clientWidth - 2 * PAD_X, H = container.clientHeight - PAD_TOP - PAD_BOTTOM;
+    const cs = getComputedStyle(container);   // Polster aus dem CSS lesen: style.css schiebt das Brett unter den Kamera-Chip
+    const W = container.clientWidth - 2 * PAD_X, H = container.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     if (!W || !H) return;
     const asp = img ? img.naturalWidth / img.naturalHeight : 1;
     let w = W, h = W / asp;
@@ -136,7 +208,8 @@ export async function createFallbackStage(container) {
   return {
     isAr: false,
     async walkTo(i, { instant = false } = {}) {
-      hideChest();
+      hideChest(); hideCard();
+      here = -1; going = i; paintMarks();
       coupleIn.style.removeProperty('--ax'); coupleIn.style.removeProperty('--ay');
       const path = pathTo(STOPS[i]);
       if (instant || !path.length) {
@@ -150,25 +223,24 @@ export async function createFallbackStage(container) {
         couple.classList.remove('walking');
       }
       cur = STOPS[i];
+      if (going === i) going = -1;
+      here = i; paintMarks();
     },
-    cheer() {
-      couple.classList.add('cheer');
-      setTimeout(() => couple.classList.remove('cheer'), 1900);
-    },
+    cheer,
     showChest(r, c) {
       hideChest();
-      chest = el('div', 'fb-chest', `<span class="ring"></span>${CHEST_SVG}`);
+      paintMarks();
+      chest = el('div', 'fb-chest', `<span class="ring"></span>${art('chest', CHEST_SVG)}`);
       for (let k = 0; k < 8; k++) { const s = el('span', 'spark'); s.style.setProperty('--a', k * 45 + 'deg'); chest.append(s); }
       at(chest, [r, c]);
       layer.append(chest);
-      // Paar bleibt auf seinem Feld (Gang), nur leicht Richtung Brettmitte versetzt; die Truhe (z-index darüber) bleibt sichtbar
-      const dc = Math.sign(4 - cur[1]) || 1;
-      const [ax, ay] = [dc * 0.5, 0.3];
-      coupleIn.style.setProperty('--ax', ax); coupleIn.style.setProperty('--ay', ay);
+      stepAside();
     },
     hideChest,
+    showCard,
+    hideCard,
     highlightDot(color) { dots.forEach((d) => d.classList.toggle('lit', d.dataset.color === color)); },
     onDotTap(cb) { tapCb = cb; },
-    destroy() { ro.disconnect(); container.innerHTML = ''; container.classList.remove('fb-stage'); container.style.padding = ''; },
+    destroy() { hideCard(); ro.disconnect(); container.innerHTML = ''; container.classList.remove('fb-stage'); container.style.padding = ''; },
   };
 }

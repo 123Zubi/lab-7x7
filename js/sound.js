@@ -42,6 +42,8 @@ export const sound = {
     [[523, 0], [659, 0.14], [784, 0.28], [1047, 0.42]].forEach(([f, d]) => tone(f, t + d, 0.3, { type: 'triangle', vol: 0.15 }));
     [[784, 0.6], [1047, 0.6], [1319, 0.6]].forEach(([f, d]) => tone(f, t + d, 0.9, { type: 'square', vol: 0.06 }));
   }),
+  // Glöckchen beim Umdrehen der Karte (nutzt den freigeschalteten Kontext, folgt dem Stumm-Schalter)
+  bell: () => play((t) => [[1568, 0.12], [2349, 0.06], [3136, 0.04], [1976, 0.08]].forEach(([f, v], j) => tone(f, t + 0.02 + (j === 3 ? 0.14 : 0), 1.4, { vol: v }))),
   tension: () => play((t) => {
     for (let i = 0; i < 4; i++) tone(98 + i * 2, t + i * 0.28, 0.26, { type: 'sine', vol: 0.18 });
     tone(110, t, 1.1, { type: 'triangle', vol: 0.05, to: 130 });

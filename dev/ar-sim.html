@@ -25,7 +25,7 @@
 <div id="ui">
   <button data-w="0">1</button><button data-w="1">2</button><button data-w="2">3</button><button data-w="3">4</button><button data-w="4">5 Ziel</button>
   <label><input type="checkbox" id="instant"> instant</label>
-  <button id="cheer">cheer</button><button id="chest">chest</button><button id="dots">dots</button>
+  <button id="cheer">cheer</button><button id="card">Schatz</button><button id="chest">chest</button><button id="reset">reset</button><button id="dots">dots</button>
   <button data-v="schraeg">schräg</button><button data-v="oben">oben</button><button data-v="flach">flach</button>
 </div>
 <script type="module">
@@ -54,6 +54,15 @@
     log(`walkTo(${i}) fertig nach ${((performance.now() - t0) / 1000).toFixed(1)} s → Feld ${STOPS[i]}`);
   }));
   document.querySelector('#cheer').onclick = () => stage.cheer();
+  const THEMES = ['weihnachtsmarkt', 'kino', 'dinner', 'spieleabend', 'flitterwochen'];
+  document.querySelector('#card').onclick = async () => {
+    const i = Math.max(0, cur), t0 = performance.now();
+    log(`showCard(${STOPS[i]}) – Schatz antippen …`);
+    const r = await stage.showCard(...STOPS[i], { icon: `../assets/ui/icon-${THEMES[i]}.png`, theme: THEMES[i] });
+    log(`Icon angetippt nach ${((performance.now() - t0) / 1000).toFixed(1)} s` + (r ? ` – Rechteck ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}px` : ''));
+    setTimeout(() => stage.hideCard(), 600);
+  };
+  document.querySelector('#reset').onclick = () => { stage.reset(); cur = -1; log('reset – Paar auf Start (7,7)'); };
   document.querySelector('#chest').onclick = () => stage.showChest(...STOPS[Math.max(0, cur)]);
   document.querySelector('#dots').onclick = () => {
     dot = dot >= 3 ? -1 : dot + 1;

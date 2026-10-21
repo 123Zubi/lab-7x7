@@ -3,11 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#050b2e">
+<meta name="theme-color" content="#fbf7ef">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<title>Für Marc &amp; Fiona</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%8D%3C/text%3E%3C/svg%3E">
+<title>Für Mark &amp; Fiona</title>
+<link rel="icon" href="favicon.png" type="image/png" sizes="64x64">
+<link rel="apple-touch-icon" href="assets/ui/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500;1,600&amp;family=Jost:wght@400;500;600&amp;family=Pinyon+Script&amp;display=swap" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -15,37 +20,49 @@
 
   <!-- Startbildschirm -->
   <section id="screen-start" class="screen start" hidden>
-    <div class="sparkles" aria-hidden="true"></div>
+    <div class="frame" aria-hidden="true"></div>
     <div class="start-inner">
-      <svg class="rings" viewBox="0 0 120 70" aria-hidden="true">
-        <circle cx="45" cy="38" r="22" fill="none" stroke="#f5c542" stroke-width="6"/>
-        <circle cx="75" cy="38" r="22" fill="none" stroke="#ffe08a" stroke-width="6"/>
-        <path d="M45 16 L52 6 L60 16 L68 6 L75 16" fill="none" stroke="#fff" stroke-width="2.500" stroke-linejoin="round" opacity=".9"/>
-      </svg>
-      <p class="eyebrow">Ein Hochzeitsgeschenk</p>
-      <h1 class="title"><small>Für</small>Marc &amp; Fiona</h1>
-      <p class="subtitle">Das Hochzeits-Labyrinth</p>
-      <div id="start-couple" class="start-couple"></div>
-      <p class="lead">Vier Rätsel, vier Schätze – und am Ende wartet ein großer Gewinn.</p>
+      <div class="start-top">
+      <p class="kicker rise" style="--d:0">Ein Hochzeitsgeschenk für</p>
+      <h1 class="names rise" style="--d:1"><span>Mark</span> <span class="amp">&amp;</span> <span>Fiona</span></h1>
+      <div class="divider art art-divider rise" data-img="divider" style="--d:2" aria-hidden="true"><svg viewBox="0 0 240 24"><path class="draw" d="M8 12H98M142 12H232"/><path d="M120 18.5c-6-4-9.5-6.6-9.5-9.6a4.6 4.6 0 0 1 9.5-1.6 4.6 4.6 0 0 1 9.5 1.6c0 3-3.5 5.6-9.5 9.6z" class="heart"/><path d="M98 12c3-4 7-5 10-4M98 12c3 4 7 5 10 4M142 12c-3-4-7-5-10-4M142 12c-3 4-7 5-10 4" class="leaf"/><circle cx="6" cy="12" r="1.6"/><circle cx="234" cy="12" r="1.6"/></svg></div>
+      <p class="subtitle rise" style="--d:2">Das Hochzeits-Labyrinth</p>
+      <p class="lead rise" style="--d:3">Fünf Rätsel, vier Schätze und am Ende ein ganz besonderer Gewinn.</p>
+      </div>
+      <div class="hero rise" style="--d:3">
+        <svg class="medallion" viewBox="0 0 200 200" aria-hidden="true">
+          <circle cx="100" cy="100" r="96" class="m-outer"/>
+          <circle cx="100" cy="100" r="91" class="m-dots"/>
+          <g class="m-maze">
+            <circle cx="100" cy="100" r="82" stroke-dasharray="470 45" transform="rotate(-70 100 100)"/>
+            <circle cx="100" cy="100" r="72" stroke-dasharray="405 47" transform="rotate(115 100 100)"/>
+            <circle cx="100" cy="100" r="62" stroke-dasharray="345 45" transform="rotate(10 100 100)"/>
+            <path d="M100 18v10M172 100h10M100 172v10M28 100H18M151 49l7-7M49 151l-7 7"/>
+          </g>
+          <circle cx="100" cy="100" r="53" class="m-fill"/>
+        </svg>
+        <div id="start-couple" class="hero-couple art art-hero" data-img="hero"></div>
+      </div>
+      <div class="start-bottom">
       <p id="inapp-note" class="notice" role="note" hidden>Bitte im normalen Safari/Chrome öffnen, nicht in WhatsApp/Instagram – dort ist die Kamera oft blockiert.</p>
-      <div class="start-btns">
-        <button id="btn-ar" class="btn btn-gold"><span aria-hidden="true">📷 </span>Mit Kamera spielen (AR)</button>
+      <div class="start-btns rise" style="--d:5">
+        <button id="btn-ar" class="btn btn-gold"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3a1 1 0 0 1 1 1V18a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.2" r="3.4"/></svg>Mit Kamera spielen</button>
         <button id="btn-plain" class="btn btn-ghost">Ohne Kamera spielen</button>
       </div>
-      <p class="fine">Haltet das Spielbrett bereit.</p>
-      <p id="offline-ok" class="fine" hidden>✓ Offline bereit</p>
+      <p class="fine rise" style="--d:6">Haltet das Spielbrett bereit.</p>
+      <p id="offline-ok" class="fine fine-ok" hidden>Offline bereit</p>
+      </div>
     </div>
   </section>
 
   <!-- Spiel -->
   <section id="screen-game" class="screen game" hidden>
     <header class="hud">
-      <div class="hud-title">Marc &amp; Fiona</div>
+      <div class="hud-title">Mark <span class="amp">&amp;</span> Fiona</div>
       <ol id="pips" class="pips" aria-label="Fortschritt"></ol>
-      <button id="btn-sound" class="icon-btn" aria-label="Ton an oder aus">🔊</button>
+      <button id="btn-sound" class="icon-btn" aria-label="Ton an oder aus"></button>
     </header>
     <div id="stage"></div>
-    <div id="hint" class="chip" hidden>Tipp: Dreht das Brett so, dass Rot oben links liegt – wie auf dem Bild.</div>
     <div id="panel" class="panel" hidden></div>
     <details id="debug" class="debug" hidden>
       <summary>Debug</summary>
@@ -53,16 +70,53 @@
     </details>
   </section>
 
+  <!-- Anleitung: liegt über dem Spiel, während die Kamera darunter startet -->
+  <section id="guide" class="guide" hidden aria-labelledby="guide-title">
+    <div class="guide-scroll">
+      <div class="guide-inner">
+        <p class="kicker" id="g-kicker"></p>
+        <h2 class="guide-title" id="guide-title"></h2>
+        <p class="guide-intro" id="g-intro"></p>
+        <div class="divider divider-sm art art-divider" data-img="divider" aria-hidden="true"><svg viewBox="0 0 240 24"><path d="M8 12H98M142 12H232"/><path d="M120 18.5c-6-4-9.5-6.6-9.5-9.6a4.6 4.6 0 0 1 9.5-1.6 4.6 4.6 0 0 1 9.5 1.6c0 3-3.5 5.6-9.5 9.6z" class="heart"/><path d="M98 12c3-4 7-5 10-4M98 12c3 4 7 5 10 4M142 12c-3-4-7-5-10-4M142 12c-3 4-7 5-10 4" class="leaf"/></svg></div>
+        <h3 class="guide-h" id="g-steps-title"></h3>
+        <ol class="guide-steps" id="g-steps"></ol>
+        <h3 class="guide-h" id="g-tips-title"></h3>
+        <ul class="guide-tips" id="g-tips"></ul>
+        <p class="guide-warn" id="g-warn"></p>
+      </div>
+    </div>
+    <div class="guide-foot">
+      <div id="guide-status" class="guide-status" role="status" aria-live="polite">
+        <span class="g-track" aria-hidden="true"><span class="g-fill"></span></span>
+        <span class="g-text"></span>
+      </div>
+      <button id="btn-go" class="btn btn-gold" disabled></button>
+      <button id="guide-cancel" class="link-btn" hidden></button>
+    </div>
+  </section>
+
   <!-- Abschluss -->
   <section id="screen-end" class="screen end" hidden>
-    <div class="sparkles" aria-hidden="true"></div>
+    <div class="frame" aria-hidden="true"></div>
     <div class="start-inner">
-      <p class="eyebrow">Geschafft!</p>
-      <h1 class="title end-title">Alle Schätze gefunden</h1>
-      <div id="end-couple" class="start-couple cheer"></div>
-      <ul id="end-list" class="prizes"></ul>
-      <p class="total">Gesamt: <strong id="end-total">300 €</strong></p>
-      <p class="lead">Alles Liebe zur Hochzeit, Marc &amp; Fiona!</p>
+      <div class="end-top">
+      <p class="kicker rise" style="--d:0" id="end-kicker"></p>
+      <h1 class="end-title rise" style="--d:1" id="end-title"></h1>
+      <div class="hero hero-sm rise" style="--d:2">
+        <svg class="medallion" viewBox="0 0 200 200" aria-hidden="true">
+          <circle cx="100" cy="100" r="96" class="m-outer"/>
+          <circle cx="100" cy="100" r="91" class="m-dots"/>
+          <circle cx="100" cy="100" r="80" class="m-fill"/>
+        </svg>
+        <div id="end-couple" class="hero-couple cheer art art-hero" data-img="hero"></div>
+      </div>
+      <p class="prizes-title rise" style="--d:3" id="end-list-title"></p>
+      <ul id="end-list" class="prizes rise" style="--d:3"></ul>
+      <div class="divider art art-divider rise" data-img="divider" style="--d:5" aria-hidden="true"><svg viewBox="0 0 240 24"><path d="M8 12H98M142 12H232"/><path d="M120 18.5c-6-4-9.5-6.6-9.5-9.6a4.6 4.6 0 0 1 9.5-1.6 4.6 4.6 0 0 1 9.5 1.6c0 3-3.5 5.6-9.5 9.6z" class="heart"/><path d="M98 12c3-4 7-5 10-4M98 12c3 4 7 5 10 4M142 12c-3-4-7-5-10-4M142 12c-3 4-7 5-10 4" class="leaf"/></svg></div>
+      <p class="end-wish rise" style="--d:5"><span id="end-wish"></span>,<br><span class="end-names">Mark <span class="amp">&amp;</span> Fiona</span></p>
+      <p class="end-note rise" style="--d:6" id="end-note"></p>
+      </div>
+      <button id="btn-again" class="btn btn-ghost btn-again rise" style="--d:7"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4.5v3.8h3.8"/></svg><span id="btn-again-text"></span></button>
     </div>
   </section>
 
@@ -70,7 +124,7 @@
     <div class="modal-card"><div class="spinner" aria-hidden="true"></div><p id="loading-text">Kamera wird gestartet …</p>
       <button id="btn-cancel-ar" class="btn btn-ghost">Lieber ohne Kamera</button></div>
   </div>
-  <div id="modal" class="overlay" hidden></div>
+  <div id="card" class="overlay card-overlay" hidden></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <canvas id="confetti" aria-hidden="true"></canvas>
 </main>

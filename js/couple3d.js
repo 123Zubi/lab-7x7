@@ -1,4 +1,4 @@
-// Prozedurales Low-Poly-Brautpaar (Marc & Fiona) als A-Frame-1.5.0-Komponente `couple`.
+// Prozedurales Low-Poly-Brautpaar (Mark & Fiona) als A-Frame-1.5.0-Komponente `couple`.
 // Ursprung = Fuesse (Mitte zwischen den Figuren), Blick +Z, Hoehe 1.0, Abstand der Figuren 0.45.
 // Animationen: idle | walk | cheer (per Attribut `couple="anim: walk"` oder el.components.couple.play('cheer')).
 

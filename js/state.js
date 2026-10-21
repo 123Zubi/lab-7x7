@@ -1,17 +1,20 @@
 // Fortschritt im localStorage (Vertrag: Key hochzeit-labyrinth-v1).
 // station: 0 = Intro, 1..4 = aktuelle Station (Frage offen oder Schatz noch nicht bestätigt), 5 = Finale
-// solved: gelöste Stationen (0-basiert). wrong/gone: Markierungen der aktuellen Frage. jokers: je einmal pro Spiel.
+// solved: gelöste Fragen (0-basiert, 4 = Hauptschatz-Frage). wrong/gone: Markierungen der aktuellen Frage. jokers: 50:50 einmal pro Spiel.
+// qs: die 5 gezogenen Fragen dieses Spiels (Antworten schon gemischt), damit ein Reload dieselben Fragen zeigt.
 const KEY = 'hochzeit-labyrinth-v1';
 const fresh = () => ({
   station: 0, wrongCount: 0, usingBackup: false, solved: [],
-  wrong: [], gone: [], jokers: { fifty: false, audience: false }, done: false, mode: null,
+  wrong: [], gone: [], jokers: { fifty: false }, done: false, mode: null, qs: null,
 });
 
 const params = new URLSearchParams(location.search);
 export const isDebug = () => params.get('debug') === '1';
 
-if (params.get('reset') === '1') {
-  try { localStorage.removeItem(KEY); } catch {}
+// Gespielte Fragen-IDs (eigener Key): überlebt ?reset=1 und „Nochmals spielen“, nur ?reset=all löscht ihn.
+export const PLAYED_KEY = 'hochzeit-labyrinth-fragen-v1';
+if (params.get('reset') === '1' || params.get('reset') === 'all') {
+  try { localStorage.removeItem(KEY); if (params.get('reset') === 'all') localStorage.removeItem(PLAYED_KEY); } catch {}
   params.delete('reset');
   const q = params.toString();
   history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
