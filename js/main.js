@@ -10,6 +10,11 @@ const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IN_APP = /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|MicroMessenger|Snapchat|TikTok|musical_ly|Twitter|LinkedInApp|Pinterest/i;
 const stageEl = $('#stage');
+// Anleitungsbild schon beim Laden der Seite holen und dekodieren: Sonst lädt der Browser es erst, wenn die Anleitung erscheint,
+// und dann im Wettlauf mit A-Frame/MindAR/targets.mind (mehrere MB) – auf dem iPhone kam es erst, wenn die Kamera lief.
+const guideImg = new Image();
+guideImg.src = 'assets/ui/anleitung.jpg';
+const guideImgReady = guideImg.decode().catch(() => {});
 const panel = $('#panel');
 let stage = null;
 let quiz = null;
@@ -80,14 +85,25 @@ const iconImg = (theme) => probe(`assets/ui/icon-${theme}.png`).then((u) => { if
 const cardImgs = (theme) => Promise.all([probe(`assets/cards/${theme}.jpg`), iconImg(theme)]);
 const HEART = '<svg class="cf-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5c-5.4-3.7-8.5-6.5-8.5-10a4.6 4.6 0 0 1 8.5-2.5 4.6 4.6 0 0 1 8.5 2.5c0 3.5-3.1 6.3-8.5 10z"/></svg>';
 
-/** Schatz auf dem Feld (Truhe + schwebendes Icon), bis er angetippt wird. Liefert (Fallback) die Position des Icons für den Flug. */
+const AUTO_OPEN_MS = 10000;
+/** Schatz auf dem Feld (Truhe + schwebendes Icon), bis er angetippt wird (oder 10 s vergehen). Liefert (Fallback) die Position des Icons für den Flug. */
 async function treasureScene(k) {
   const S = stop(k);
   if (!stage.showCard) return null;   // Bühne ohne Schatz-Szene (älteres ar.js): direkt zur Vollbild-Karte
   const icon = await iconImg(S.theme);   // Kartenbild nur vorladen, die Truhe wartet nicht darauf
   probe(`assets/cards/${S.theme}.jpg`);
   showPanel(`${bubble(`<p>${S.bubble}</p><p class="b-ask">${CARDS[k].lift}</p>`, k < 4 ? 'arrive' : 'finale')}<p class="tap-hint">${READY.tap}</p>`);
-  const from = await stage.showCard(...S.pos, { icon, theme: S.theme });
+  // Wird das Icon 10 s nicht angetippt, öffnet sich die Karte von selbst (Reload in diesem Zustand: Uhr beginnt neu).
+  let timer;
+  const auto = new Promise((res) => (timer = setTimeout(() => res('auto'), AUTO_OPEN_MS)));
+  let from = await Promise.race([stage.showCard(...S.pos, { icon, theme: S.theme }), auto]);
+  clearTimeout(timer);
+  if (from === 'auto') {
+    // Flug startet am Icon: Fallback hat es im DOM, AR (3D) nicht → kleiner Startpunkt in der Bildmitte
+    const el = stageEl.querySelector('.fb-ticon-in');
+    from = el ? el.getBoundingClientRect() : new DOMRect(innerWidth / 2 - 30, innerHeight * 0.4 - 30, 60, 60);
+    stage.hideCard && stage.hideCard();
+  }
   hidePanel();
   return from || null;
 }
@@ -192,25 +208,25 @@ async function run() {
     stage.hideCard && stage.hideCard();
     await openCard(k, from);
     if (fin) { state.done = true; save(); break; }
-    Object.assign(state, { station: state.station + 1, step: 'ready', wrongCount: 0, usingBackup: false, wrong: [], gone: [] });
+    Object.assign(state, { station: state.station + 1, step: 'ready', wrongCount: 0, usingBackup: false, extra: null, wrong: [], gone: [] });
     save();
   }
   showEnd();
 }
 
-/** „Nochmals spielen“: Fortschritt, Fragen, Joker, Karten zurück; Modus und wantAr bleiben. Ohne Reload zurück zur Anleitung.
- *  Die alte Bühne wurde in showEnd zerstört (Kamera aus); startGame baut eine frische Bühne mit dem Paar auf Start (7,7) und
- *  zeigt wieder die Anleitung, unter der die Kamera neu startet. So gibt es keinen Restzustand aus Runde 1. */
+/** „Nochmals spielen“: Fortschritt, Fragen, Joker, Karten zurück, ohne Reload zurück zum Startmenü (Mit/Ohne Kamera neu wählbar).
+ *  Die Bühne wurde in showEnd zerstört (Kamera aus); hier verschwindet auch ihr Container. Die nächsten Fragen zieht startGame neu. */
 function playAgain() {
   sound.click();
   endTimers.forEach(clearTimeout); endTimers = [];   // Konfetti-Nachschub des Abschlusses stoppen
-  const { mode, wantAr } = state;
   reset();
-  Object.assign(state, { mode, wantAr, step: 'ready' });
-  save();
   $('#card').hidden = true; $('#card').innerHTML = '';
   parts = [];
-  startGame((wantAr ?? mode === 'ar') ? 'ar' : 'fallback', true);   // neue Bühne startet beim Start (7,7), die alte ist seit showEnd weg
+  if (stage && stage.host) stage.host.remove();
+  stage = null;
+  document.body.classList.remove('mode-ar');
+  show('start');
+  updateTip();
 }
 
 let endTimers = [];
@@ -342,7 +358,7 @@ const guide = (() => {
     ready(isAr) {
       if (isAr) setStatus(GUIDE.status.ready, 'ready', 4);
       go.disabled = false;
-      return new Promise((res) => (go.onclick = () => { sound.click(); go.onclick = null; root.hidden = true; res(); }));
+      return new Promise((res) => (go.onclick = () => { sound.click(); go.onclick = null; fullscreen(); root.hidden = true; res(); }));
     },
   };
 })();
@@ -404,6 +420,10 @@ async function startGame(mode, guided = false) {
   state.wantAr = mode === 'ar'; save();
   document.body.classList.toggle('mode-ar', mode === 'ar');
   if (guided) guide.open(mode === 'ar');   // Kamera startet darunter, die Anleitung deckt die Bühne ab
+  if (guided && mode === 'ar') {   // AR-Downloads erst, wenn das Anleitungsbild steht (höchstens 2 s warten)
+    await Promise.race([guideImgReady, sleep(2000)]);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
   let s = mode === 'ar' ? await tryAr(guided ? guide.view : overlayView) : null;
   const plain = !s;
   if (plain) s = await fallbackStage();
@@ -433,6 +453,28 @@ function setupDebug() {
   };
 }
 
+/* ---------- Vollbild ---------- */
+// iPhone-Safari kennt keine Fullscreen-API für Seiten: dort hilft nur der Web-App-Modus (Home-Bildschirm, manifest + apple-mobile-web-app-capable).
+const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const TIP_KEY = 'hochzeit-labyrinth-tipp-vollbild';
+/** Android/Chrome: beim Spielstart (Klick = Nutzergeste) Vollbild anfordern. Nur auf Touch-Geräten, nicht im Web-App-Modus. */
+function fullscreen() {
+  if (IOS || standalone() || document.fullscreenElement || !matchMedia('(pointer: coarse)').matches) return;
+  try { const p = document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }); if (p) p.catch(() => {}); } catch {}
+}
+/** Tipp „Zum Home-Bildschirm“ auf dem Startmenü: nur iOS im Browser (nicht in WhatsApp & Co.), wegklickbar, gemerkt. */
+function updateTip() {
+  let off = false;
+  try { off = localStorage.getItem(TIP_KEY) === '1'; } catch {}
+  $('#a2hs').hidden = off || !IOS || standalone() || IN_APP.test(navigator.userAgent);
+}
+$('#a2hs-close').onclick = () => {
+  sound.click();
+  try { localStorage.setItem(TIP_KEY, '1'); } catch {}
+  $('#a2hs').hidden = true;
+};
+
 /* ---------- Offline-Hilfe (sw.js) ---------- */
 // Dieselben URLs wie in ar.js (AFRAME_SRC/MINDAR_SRC) – bei Versionswechsel dort hier mitziehen.
 const CDN_URLS = ['https://aframe.io/releases/1.5.0/aframe.min.js', 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js'];
@@ -445,6 +487,7 @@ async function setupOffline() {
       history.replaceState(null, '', location.pathname);
       return console.info('Offline-Cache geleert');
     }
+    await guideImgReady;   // SW-Installation (ganze SHELL) und CDN-Vorabladen (mehrere MB) erst nach dem Anleitungsbild
     await navigator.serviceWorker.register('sw.js', { scope: './' });
     await navigator.serviceWorker.ready;
     // CDN-Skripte im Hintergrund holen (no-cors wie das <script>-Tag; Antwort ist opak). Direkt in den Cache, unabhängig davon, ob der SW die Seite schon steuert.
@@ -472,6 +515,6 @@ function boot() {
   setupOffline();
   if (state.done) return showEnd();
   if (state.station > 0) startGame((state.wantAr ?? state.mode === 'ar') ? 'ar' : 'fallback');   // Wunsch zählt, nicht der letzte Notfall-Modus
-  else show('start');
+  else { show('start'); updateTip(); }
 }
 boot();

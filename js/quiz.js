@@ -1,5 +1,7 @@
 // Quiz im Millionär-Stil (eigenes Design). Regeln: Plan §8.
-// Falsch → rot + deaktiviert; nach 2 Falschen → Backup-Frage (dort Falsche nur ausgegraut, ohne Rot).
+// Falsch → rot + deaktiviert. Nach 2 Falschen (bei JEDER Frage) wird die richtige Antwort grün gezeigt, dann kommt eine neue Frage:
+// zuerst die Backup-Frage, danach Ersatzfragen aus dem Pool (gleiche Stufe → leichtere → irgendeine). Erst eine richtige Antwort löst die Station.
+// In Backup/Ersatzfragen sind Falsche nur ausgegraut, ohne Rot.
 // Joker 50:50 einmal pro Spiel (Zustand in state.jokers). Fragen: je Stufe 1..5 eine aus dem Pool (questions.js), siehe ensureQuestions.
 import { DOTS, LETTERS, POSES, MINI_POOL, QUESTION_COUNT } from './content.js';
 import { art, coupleSVG } from './fallback.js';
@@ -10,6 +12,7 @@ const shuffle = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[
 const HINT = 'Antwort antippen – oder den Farbpunkt auf dem Brett.';
 const WRONG = 'Leider nicht, versucht es nochmal!';
 const SOFT = 'Nicht ganz – nehmt eine andere Antwort.'; // Backup-Frage: sanft, ohne Rot
+const REVEAL_MS = 2500;
 
 const readPlayed = () => { try { const a = JSON.parse(localStorage.getItem(PLAYED_KEY)); return Array.isArray(a) ? a : []; } catch { return []; } };
 const writePlayed = (a) => { try { localStorage.setItem(PLAYED_KEY, JSON.stringify(a)); } catch {} };
@@ -19,10 +22,12 @@ const mix = (q, a, correct) => { const p = shuffle([0, 1, 2, 3]); return { text:
 /** Je Stufe 1..5 eine noch nicht gespielte Frage ziehen; sind alle einer Stufe gespielt, beginnt diese Stufe von vorn.
  *  Gezogene Fragen gelten sofort als gespielt (Key überlebt ?reset=1 und „Nochmals spielen“). Ergebnis steht in state.qs,
  *  ein Reload behält also Fragen und Antwortreihenfolge. Fehlt questions.js, dient MINI_POOL (content.js) als Pool. */
+let poolP = null;
+const loadPool = () => (poolP ||= import('./questions.js').then((m) => (Array.isArray(m.POOL) && m.POOL.length ? m.POOL : MINI_POOL), () => MINI_POOL));
+
 export async function ensureQuestions() {
   if (Array.isArray(state.qs) && state.qs.length === QUESTION_COUNT) return;
-  const mod = await import('./questions.js').catch(() => null);
-  const pool = mod && Array.isArray(mod.POOL) && mod.POOL.length ? mod.POOL : MINI_POOL;
+  const pool = await loadPool();
   let played = readPlayed();
   state.qs = Array.from({ length: QUESTION_COUNT }, (_, i) => {
     const lv = i + 1;
@@ -38,10 +43,27 @@ export async function ensureQuestions() {
   save();
 }
 
+/** Ersatzfrage für Stufe `lv`: ungespielt aus derselben Stufe, sonst der nächstleichteren, sonst irgendeine ungespielte,
+ *  sonst irgendeine, die in diesem Spiel noch nicht vorkam. Gilt sofort als gespielt (PLAYED_KEY) und landet in state.extraIds. */
+async function drawExtra(lv) {
+  const pool = await loadPool();
+  const played = readPlayed();
+  const used = new Set([...state.qs.map((q) => q.id), ...(state.extraIds || [])]);
+  const any = (c) => (c.length ? c[Math.floor(Math.random() * c.length)] : null);
+  const open = pool.filter((p) => !used.has(p.id));
+  const fresh = open.filter((p) => !played.includes(p.id));
+  let p = null;
+  for (let l = lv; l >= 1 && !p; l--) p = any(fresh.filter((x) => x.level === l));
+  p = p || any(fresh) || any(open) || any(pool);
+  writePlayed([...played.filter((id) => id !== p.id), p.id]);
+  state.extraIds = [...(state.extraIds || []), p.id];
+  return mix(p.q, p.a, p.correct);
+}
+
 export function createQuiz({ root, stage, sound }) {
   let idx = 0, active = false, busy = false, done = null, shownAt = 0;
   const early = () => performance.now() - shownAt < 400; // Klicksperre nach render: Doppeltipp auf „Zur Frage“ darf keinen Joker treffen
-  const cur = () => (state.usingBackup ? state.qs[idx].backup : state.qs[idx].question);
+  const cur = () => state.extra || (state.usingBackup ? state.qs[idx].backup : state.qs[idx].question);
   const btns = () => [...root.querySelectorAll('.ans')];
   const wrongMsg = () => (state.usingBackup ? [SOFT, 'soft'] : [WRONG, 'bad']);
   const SIT = { '': 'question', ok: 'right', bad: 'wrong', soft: 'wrong', pity: 'pity' };   // Meldung → Paar-Pose (POSES)
@@ -58,7 +80,7 @@ export function createQuiz({ root, stage, sound }) {
     shownAt = performance.now();
     const q = cur();
     root.innerHTML = `<div class="quiz">
-      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${QUESTION_COUNT}</span>${state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}<span class="jokers"><button class="joker" data-j="fifty">50:50</button></span></div>
+      <div class="q-head"><span class="q-tag">Frage ${idx + 1} von ${QUESTION_COUNT}</span>${state.extra ? '<span class="q-tag backup">Neue Frage</span>' : state.usingBackup ? '<span class="q-tag backup">Leichtere Frage</span>' : ''}<span class="jokers"><button class="joker" data-j="fifty">50:50</button></span></div>
       <div class="q-text"><span>${q.text}</span></div>
       <div class="answers">${q.options.map((o, i) => `<button class="ans" data-i="${i}" style="--lc:${DOTS[i].hex}" aria-label="Antwort ${LETTERS[i]}: ${o}"><span class="ans-in"><span class="letter l${i}">${LETTERS[i]}</span><span class="txt">${o}</span></span></button>`).join('')}</div>
       <p class="q-msg" aria-live="polite"></p>
@@ -107,13 +129,20 @@ export function createQuiz({ root, stage, sound }) {
     state.wrong.push(i);
     sound.wrong();
     stage.highlightDot && stage.highlightDot(null);
-    if (!state.usingBackup && ++state.wrongCount >= 2) {
-      state.usingBackup = true; state.wrong = []; state.gone = []; // vor dem Warten speichern: Reload zeigt direkt die Backup-Frage
+    if ((state.wrongCount = state.wrong.length) >= 2) {
+      // Richtige Antwort zeigen, dann neue Frage. Die neue Frage steht schon VOR dem Warten im Spielstand: ein Reload zeigt sie direkt.
+      const easier = !state.usingBackup;
+      if (easier) state.usingBackup = true; else state.extra = await drawExtra(idx + 1);
+      Object.assign(state, { wrongCount: 0, wrong: [], gone: [] });
       save();
-      b.classList.add('wrong'); b.disabled = true; // Anzeige bleibt bis zur Backup-Frage rot
-      say('Das Brautpaar hat Mitleid – hier kommt eine leichtere Frage!', 'pity');
-      await sleep(2300);
-      render(); busy = false;
+      b.classList.add(easier ? 'wrong' : 'off'); b.disabled = true;   // wie paint(): Hauptfrage rot, sonst ausgegraut
+      btns()[q.correct].classList.add('right');
+      stage.highlightDot && stage.highlightDot(DOTS[q.correct].color);
+      say(`Die richtige Antwort war ${LETTERS[q.correct]}: ${q.options[q.correct]}. ${easier ? 'Hier kommt eine leichtere Frage!' : 'Hier kommt eine neue Frage!'}`, 'pity');
+      await sleep(REVEAL_MS);
+      stage.highlightDot && stage.highlightDot(null);
+      if (active) render();
+      busy = false;
       return;
     }
     save(); paint();

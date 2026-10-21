@@ -8,7 +8,9 @@ import { STATIONS, FINALE, DOTS } from './content.js';
 import { isDebug, state } from './state.js';
 import { ROUTE, BOARD_IMAGE } from './route.js';
 
-const STEP_MS = 320;
+const STEP_MS = 320, FRAME_MS = 180;
+// Sprites aus Spielfiguren/Chibi-Hochzeitspaar-Spritebogen.png (docs/ASSETS.md): gleiche Leinwand, Füsse an der Unterkante.
+const POSES = ['steht', 'laeuft-1', 'laeuft-2', 'jubelt', 'hinten'];
 const PAD_X = 16, PAD_TOP = 30, PAD_BOTTOM = 2;
 const STOPS = [...STATIONS.map((s) => s.pos), FINALE.pos];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -131,8 +133,11 @@ export async function createFallbackStage(container) {
     m.classList.toggle('solved', solved && k !== here && k !== going);
   });
 
-  const couple = el('div', 'fb-couple', `<div class="couple-in">${coupleSVG()}</div>`);
-  const coupleIn = couple.firstChild;
+  // Alle 5 Posen liegen als <img> übereinander (vorgeladen, kein Flackern); sichtbar ist nur die mit .on.
+  const couple = el('div', 'fb-couple', `<div class="couple-in">${POSES.map((p) => `<img class="fig" data-p="${p}" src="assets/ui/figur-${p}.png" alt="" draggable="false">`).join('')}</div>`);
+  const coupleIn = couple.firstChild, figs = [...coupleIn.children];
+  const pose = (p, flip = false) => { figs.forEach((f) => f.classList.toggle('on', f.dataset.p === p)); coupleIn.classList.toggle('flip', flip); };
+  pose('steht');
   layer.append(couple);
   let cur = route[0], curIdx = 0;
   at(couple, cur);
@@ -144,7 +149,12 @@ export async function createFallbackStage(container) {
     coupleIn.style.setProperty('--ax', dc * 0.95); coupleIn.style.setProperty('--ay', 0.3);
   };
 
-  const cheer = () => { couple.classList.add('cheer'); setTimeout(() => couple.classList.remove('cheer'), 1900); };
+  let cheerEnd = 0;
+  const cheer = () => {
+    clearTimeout(cheerEnd);
+    pose('jubelt'); couple.classList.add('cheer');
+    cheerEnd = setTimeout(() => { couple.classList.remove('cheer'); if (!couple.classList.contains('walking')) pose('steht'); }, 1900);
+  };
   let card = null, cardDone = null, anyTap = null, cheerT = 0;
   function hideCard() {
     clearTimeout(cheerT);
@@ -218,9 +228,21 @@ export async function createFallbackStage(container) {
         void couple.offsetWidth;
         couple.classList.remove('instant');
       } else {
+        // Richtung je Schritt: rechts = läuft 1/2, links = gespiegelt, hoch = von hinten, runter = steht (beide mit Wippen per CSS)
+        clearTimeout(cheerEnd); couple.classList.remove('cheer');
         couple.classList.add('walking');
-        for (const cell of path) { at(couple, cell); await sleep(STEP_MS); }
-        couple.classList.remove('walking');
+        let dir = 'r', frame = 0, prev = cur;
+        const face = () => { coupleIn.dataset.dir = dir; pose(dir === 'u' ? 'hinten' : dir === 'd' ? 'steht' : 'laeuft-' + (frame + 1), dir === 'l'); };
+        const tick = setInterval(() => { frame ^= 1; face(); }, FRAME_MS);
+        for (const cell of path) {
+          const dr = cell[0] - prev[0], dc = cell[1] - prev[1];
+          dir = dc > 0 ? 'r' : dc < 0 ? 'l' : dr < 0 ? 'u' : 'd';
+          face(); at(couple, cell); prev = cell;
+          await sleep(STEP_MS);
+        }
+        clearInterval(tick);
+        couple.classList.remove('walking'); delete coupleIn.dataset.dir;
+        pose('steht');
       }
       cur = STOPS[i];
       if (going === i) going = -1;
@@ -241,6 +263,6 @@ export async function createFallbackStage(container) {
     hideCard,
     highlightDot(color) { dots.forEach((d) => d.classList.toggle('lit', d.dataset.color === color)); },
     onDotTap(cb) { tapCb = cb; },
-    destroy() { hideCard(); ro.disconnect(); container.innerHTML = ''; container.classList.remove('fb-stage'); container.style.padding = ''; },
+    destroy() { clearTimeout(cheerEnd); hideCard(); ro.disconnect(); container.innerHTML = ''; container.classList.remove('fb-stage'); container.style.padding = ''; },
   };
 }

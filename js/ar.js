@@ -150,10 +150,14 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     }
     return new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 });
   }
-  // Paar tritt einen halben Schritt Richtung Brettmitte (am Ziel: Richtung Reihe 7) und schaut aufs Feld (r,c)
+  // Paar tritt quer zur Blickrichtung zur Seite (auf die Seite der Brettmitte) und schaut aufs Feld (r,c):
+  // so steht es neben der Truhe und nicht hinter dem Icon, das über der Truhe schwebt.
   function stepAside(r, c) {
-    const cp = U(r, c), d = U(4, 4).sub(cp).setY(0);
+    const cp = U(r, c), toMid = U(4, 4).sub(cp).setY(0), cam = camInUp();
+    let d = cam ? new THREE.Vector3(cam.z - cp.z, 0, cp.x - cam.x) : toMid.clone();
+    if (d.lengthSq() < 1e-8) d = toMid.clone();
     if (d.lengthSq() < 1e-8) d.set(0, 0, 1);
+    if (d.dot(toMid) < 0) d.negate();
     const side = cp.clone().add(d.normalize().multiplyScalar(cell * 0.75));
     side.y = r === 4 && c === 4 ? 0 : cp.y;
     moveAlong([side], 0.4).then(() => { if (!move) want = headTo(pos, cp); });
@@ -173,7 +177,46 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     return imgCache.get(src);
   };
   const EMOJI = { weihnachtsmarkt: '🎄', kino: '🍿', dinner: '🕯️', spieleabend: '🎲', flitterwochen: '🌴' };
-  const ICON_R = 0.036;
+  // Icon über der offenen Truhe: gross (2,4 Feldbreiten Durchmesser), Mitte 2 Feldbreiten über der Truhe, um 35 % des Wegs
+  // zur Brettmitte versetzt (Randfelder: bleibt im Bild und steht nicht über dem Rand). Am iPhone-Bild nachjustierbar.
+  const ICON_R = cell * 1.2, ICON_UP = cell * 2, ICON_IN = 0.35, TAP_S = 1.5;
+  const texCache = {};
+  /** Canvas-Textur, einmal gezeichnet und geteilt (Ring, Hand, Schriftzug). */
+  const canvasTex = (key, w, h, draw) => texCache[key] || (texCache[key] = (() => {
+    const cv = Object.assign(document.createElement('canvas'), { width: w, height: h });
+    draw(cv.getContext('2d'), w, h);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  })());
+  const drawRing = (g, w) => {   // goldener Ring mit weichem Glanz innen und aussen (Ring bei 0,75 der halben Breite)
+    const m = w / 2, glow = g.createRadialGradient(m, m, m * 0.55, m, m, m);
+    glow.addColorStop(0, 'rgba(255,214,90,0)'); glow.addColorStop(0.45, 'rgba(255,214,90,.8)'); glow.addColorStop(1, 'rgba(255,190,40,0)');
+    g.fillStyle = glow; g.fillRect(0, 0, w, w);
+    g.beginPath(); g.arc(m, m, m * 0.75, 0, Math.PI * 2);
+    g.strokeStyle = '#f5c542'; g.lineWidth = m * 0.08; g.stroke();
+    g.strokeStyle = '#fff4c4'; g.lineWidth = m * 0.025; g.stroke();
+  };
+  const drawHand = (g, w) => {   // Fingerzeig (Emoji) mit dunklem Schatten, damit er auf jedem Kamerabild sichtbar ist
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = `${w * 0.78}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+    g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = w * 0.08;
+    g.fillText('👆', w / 2, w / 2 + w * 0.04);
+  };
+  const LABEL_FONT = '600 76px Jost, "Cormorant Garamond", system-ui, sans-serif';
+  const drawLabel = (g, w, h) => {   // „Antippen!“ auf dunkler Pille mit Goldrand (wie die Hinweise der App)
+    g.clearRect(0, 0, w, h);
+    g.beginPath(); g.roundRect(5, 5, w - 10, h - 10, (h - 10) / 2);
+    g.fillStyle = 'rgba(5,11,46,.9)'; g.fill();
+    g.strokeStyle = '#f5c542'; g.lineWidth = 6; g.stroke();
+    g.font = LABEL_FONT; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff8e7';
+    g.fillText('Antippen!', w / 2, h / 2 + 3);
+  };
+  function labelTex() {
+    const fresh = !texCache.label, tex = canvasTex('label', 512, 144, drawLabel);
+    if (fresh && document.fonts) document.fonts.load(LABEL_FONT).then(() => { drawLabel(tex.image.getContext('2d'), 512, 144); tex.needsUpdate = true; }, () => {});
+    return tex;
+  }
   /** Badge-Textur: fertiges PNG (eigene Transparenz) oder gezeichneter Platzhalter mit Goldring, Elfenbein und Motiv je Thema. */
   function badgeTexture(img, theme) {
     if (img) {   // fertiger Badge (PNG mit Transparenz): unverändert, quadratisch
@@ -255,23 +298,26 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     up.add(g);
     const u = Object.assign(g.userData, { t0: time, resolve: () => {}, cheered: 0, icon: null });
     if (icon) {
-      // ig: Position/Grösse, Ausrichtung einmal zur Kamera; spin: pendelt ±25° um die Hochachse.
+      // ig: Billboard (schaut immer zur Kamera) mit Ring, Icon, Hand und Schriftzug; spin: Icon pendelt ±15° um die Hochachse.
       // Beidseitig: zweites Mesh um 180° gedreht mit demselben Material → Rückseite zeigt das Bild ungespiegelt.
+      // Alles ohne Tiefentest und in fester Reihenfolge gezeichnet: liegt immer über Truhe und Paar, keine Sortierfehler. 5 Draw-Calls.
       const ig = new THREE.Group(), spin = new THREE.Group();
-      const mat = new THREE.MeshBasicMaterial({ map: badgeTexture(null, icon.theme), transparent: true, alphaTest: 0.1 });   // weiche Kanten, Ränder ohne Tiefen-Loch
-      const geo = new THREE.PlaneGeometry(ICON_R * 2, ICON_R * 2);
-      const disc = new THREE.Mesh(geo, mat), back = new THREE.Mesh(geo, mat);
+      const over = (map, o) => new THREE.MeshBasicMaterial({ map, transparent: true, depthTest: false, depthWrite: false, ...o });
+      const plane = (w, h, mat, order) => Object.assign(new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat), { renderOrder: order });
+      const mat = over(badgeTexture(null, icon.theme), { alphaTest: 0.1 });
+      const disc = plane(ICON_R * 2, ICON_R * 2, mat, 3), back = new THREE.Mesh(disc.geometry, mat);
       back.rotation.y = Math.PI;
+      back.renderOrder = 3;
       disc.name = 'icon-front'; back.name = 'icon-back';
-      disc.renderOrder = back.renderOrder = 1;   // nach dem Glanz: deckt ihn ab
-      const hit = new THREE.Mesh(new THREE.CircleGeometry(ICON_R * 2, 16), new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));   // grosszügig, von beiden Seiten
-      const halo = new THREE.Sprite(glowMat());
-      halo.scale.setScalar(ICON_R * 4);
-      spin.add(disc, back, hit);
-      ig.add(halo, spin);
+      const ring = plane(ICON_R * 2.8, ICON_R * 2.8, over(canvasTex('ring', 256, 256, drawRing)), 2);   // Ring bei 1,05 × Icon-Radius
+      const label = plane(ICON_R * 1.7, ICON_R * 1.7 * 144 / 512, over(labelTex()), 4);
+      const hand = plane(ICON_R * 0.8, ICON_R * 0.8, over(canvasTex('hand', 128, 128, drawHand)), 5);
+      hand.rotation.z = 0.55;   // Finger zeigt nach links oben aufs Icon
+      spin.add(disc, back);
+      ig.add(ring, spin, label, hand);
       ig.visible = false;
       up.add(ig);   // nicht in g: soll nicht mitwackeln, nur über der Truhe stehen
-      u.icon = { g: ig, spin, disc, hit, halo, aimed: false };
+      u.icon = { g: ig, spin, disc, ring, label, hand, off: U(4, 4).sub(cp).setY(0).multiplyScalar(ICON_IN) };
       loadImg(icon.src).then((im) => {
         if (im && treasure && treasure.u === u) { mat.map.dispose(); mat.map = badgeTexture(im, icon.theme); mat.needsUpdate = true; }
       });
@@ -288,7 +334,20 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     if (u.hideT == null) u.hideT = time;
   }
   const hideChest = () => hideCard(true);
-  const camPos = new THREE.Vector3();
+  const qUp = new THREE.Quaternion(), qCam = new THREE.Quaternion(), vC = new THREE.Vector3(), vE = new THREE.Vector3();
+  /** Ragt das Billboard (Ring seitlich/oben, Schriftzug unten) aus dem Bild, entlang der Bildschirmachsen hereinschieben. */
+  function keepOnScreen(ig) {
+    const cam = sceneEl.camera, R = ICON_R * 1.2;   // Ring (1,05 R) plus etwas Glanz
+    ig.updateMatrixWorld();
+    ig.localToWorld(vC.set(0, 0, 0)).project(cam);
+    ig.localToWorld(vE.set(R, 0, 0)).project(cam);
+    const rx = Math.hypot(vE.x - vC.x, vE.y - vC.y);   // Radius in NDC-x (Billboard: rechts = Bildschirm-rechts)
+    if (!(rx > 0) || Math.abs(vC.z) > 1) return;       // hinter der Kamera / entartet
+    const ry = rx * cam.aspect, bottom = ry * 1.15;    // NDC-y ist um das Seitenverhältnis gestreckt; Schriftzug reicht 1,36 R tief
+    const dx = Math.max(0, -1 - (vC.x - rx)) - Math.max(0, vC.x + rx - 1);
+    const dy = Math.max(0, -1 - (vC.y - bottom)) - Math.max(0, vC.y + ry - 1);
+    if (dx || dy) { ig.translateX((dx / rx) * R * ig.scale.x); ig.translateY((dy / ry) * R * ig.scale.y); }
+  }
   function animTreasure() {
     const { g, u } = treasure, { s, lid, glow, sparks, H } = u, t = time - u.t0;
     let out = 1;
@@ -316,22 +375,28 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
       m.rotation.y = t * 3 + j;
       m.material.opacity = gk * (1 - ph);
     });
-    // 5) Icon steigt aus der Truhe, schwebt pulsierend darüber, schaut beim Erscheinen zur Kamera und pendelt dann ±25°
+    // 5) Icon steigt aus der Truhe (leicht zur Brettmitte), schwebt auf und ab, schaut zur Kamera und pendelt ±15°.
+    //    Ring pulsiert, die Hand tippt alle 1,5 s aufs Icon (Ring leuchtet beim Tipp auf), darunter „Antippen!“.
     if (u.icon) {
-      const { g: ig, spin, halo } = u.icon, k = clamp01((t - 1.6) / 0.8);
+      const { g: ig, spin, ring, label, hand, off } = u.icon, k = clamp01((t - 1.6) / 0.8), e = easeOutBack(k);
       ig.visible = k > 0;
       if (ig.visible) {
         const top = g.position.y + s.position.y + H;
-        ig.position.set(g.position.x, top + 0.01 + 0.075 * easeOutBack(k) + Math.sin(time * 2) * 0.005 * k, g.position.z);
-        ig.scale.setScalar(Math.max(0.001, smooth(k * 1.3) * (1 + 0.07 * Math.sin(time * 4) * k) * out));
-        halo.material.opacity = k * (0.4 + 0.2 * Math.sin(time * 4));
-        if (!u.icon.aimed && sceneEl.camera) {   // einmal ausrichten (sobald die Pose gültig ist), danach steht es fest im Raum
-          sceneEl.camera.getWorldPosition(camPos);
-          ig.lookAt(camPos);
-          u.icon.aimed = Number.isFinite(ig.quaternion.x);
-          if (!u.icon.aimed) ig.quaternion.identity();
+        ig.position.set(g.position.x + off.x * e, top + 0.01 + ICON_UP * e + Math.sin(time * 2) * cell * 0.08 * k, g.position.z + off.z * e);
+        ig.scale.setScalar(Math.max(0.001, smooth(k * 1.3) * out));
+        if (sceneEl.camera) {   // Billboard: gleiche Ausrichtung wie die Kamera (auch genau von oben eindeutig)
+          up.getWorldQuaternion(qUp).invert().multiply(sceneEl.camera.getWorldQuaternion(qCam));
+          if (Number.isFinite(qUp.x + qUp.w)) { ig.quaternion.copy(qUp); keepOnScreen(ig); }
         }
-        spin.rotation.y = Math.sin(time * 0.9) * 0.44 * k + (1 - k) * Math.PI * 2;   // beim Aufsteigen eine Drehung
+        spin.rotation.y = Math.sin(time * 0.9) * 0.26 * k + (1 - k) * Math.PI * 2;   // beim Aufsteigen eine Drehung
+        const p = (time % TAP_S) / TAP_S, press = Math.exp(-(((p - 0.42) / 0.07) ** 2));   // press: 1 im Moment des Tipps
+        const reach = smooth(p / 0.4) * (1 - smooth((p - 0.45) / 0.35)), d = ICON_R * 0.22 * (1 - reach);
+        hand.position.set(ICON_R * 0.95 + d, -ICON_R * 0.6 - d, 0);
+        hand.scale.setScalar(1 - 0.15 * press);
+        ring.scale.setScalar(1 + 0.05 * Math.sin(time * 4) + 0.12 * press);
+        ring.material.opacity = k * (0.7 + 0.3 * press);
+        label.position.y = -ICON_R * 1.12 + Math.sin(time * 3) * ICON_R * 0.03;
+        hand.material.opacity = label.material.opacity = smooth((t - 2.3) / 0.3);   // erst wenn das Icon steht
       }
     }
   }
@@ -345,6 +410,11 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     const px = (v) => { v.project(cam); return [rect.left + (v.x * 0.5 + 0.5) * rect.width, rect.top + (-v.y * 0.5 + 0.5) * rect.height]; };
     const [x, y] = px(c), [x2] = px(e), rr = Math.max(4, Math.abs(x2 - x));
     return Number.isFinite(x + y + rr) ? new DOMRect(x - rr, y - rr, rr * 2, rr * 2) : null;
+  }
+  /** Tipp trifft das Icon: innerhalb 1,6 × Icon-Radius (deckt Ring, Hand und Schriftzug), mindestens 60 px um die Icon-Mitte. */
+  function iconHit(e) {
+    const r = iconRect();
+    return !!r && Math.hypot(e.clientX - r.x - r.width / 2, e.clientY - r.y - r.height / 2) <= Math.max(60, r.width * 0.8);
   }
   function showCard(r, c, { icon, theme } = {}) {
     const u = showTreasure(r, c, { src: icon || (theme ? `assets/ui/icon-${theme}.png` : null), theme });
@@ -430,7 +500,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     ray.setFromCamera(ndc, sceneEl.camera);
     const u = treasure && treasure.u;
     if (u && u.icon && u.hideT == null) {   // Icon antippen; nach 1,5 s zählt jeder Tipp ins Kamerabild
-      if (time - u.t0 > 1.5 || (isTracking() && u.icon.g.visible && ray.intersectObject(u.icon.hit, false).length)) u.resolve(iconRect());
+      if (time - u.t0 > 1.5 || (isTracking() && u.icon.g.visible && iconHit(e))) u.resolve(iconRect());
       return;
     }
     if (!tapCb || !isTracking()) return;
@@ -553,10 +623,10 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   const debug = q.get('debug') === '1';
   const targetSrc = (debug && q.get('target')) || 'targets.mind';             // ?debug=1&target=… nur zum Testen (z. B. 404)
   // One-Euro-Filter von MindAR (Zeit in ms!): pro Matrixelement Grenzfrequenz = mincf + beta·|Ableitung|, in kHz.
-  // mincf 0.005 = 5 Hz ≙ Zeitkonstante 32 ms; beta 0 = gleiche Glättung für Drehung und Verschiebung (sonst zittert die Ecke stärker).
-  // Früher 0.0001/0.001 = 0,1 Hz ≙ 1,6 s Zeitkonstante → Einblendung schwamm hinterher. Messung und Test-URLs: docs/AR.md.
+  // Standard „sehr direkt“ mincf 1 = Filter praktisch aus (am iPhone bestätigt: klebt am besten am Brett); beta 0 = gleiche
+  // Behandlung von Drehung und Verschiebung. Ruhiger: ?mincf=0.005 (5 Hz). Früher 0.0001/0.001 → schwamm hinterher. docs/AR.md.
   const num = (k, d) => (q.has(k) && Number.isFinite(+q.get(k)) ? +q.get(k) : d);
-  const minCF = num('mincf', 0.005), beta = num('beta', 0);
+  const minCF = num('mincf', 1), beta = num('beta', 0);
 
   // Bildschirm wach halten (Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
   let destroyed = false, wl = null, wlBusy = false;

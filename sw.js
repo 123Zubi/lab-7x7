@@ -1,7 +1,7 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-21-9';
+const VERSION = '2026-10-21-10';
 const APP = 'hl-app-' + VERSION;
 const CDN = 'hl-cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
 const CDN_HOSTS = ['aframe.io', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com']; // Google Fonts: zur Laufzeit cache-first
@@ -15,6 +15,7 @@ const SHELL = [
   'assets/ui/icon-weihnachtsmarkt.png', 'assets/ui/icon-kino.png', 'assets/ui/icon-dinner.png', 'assets/ui/icon-spieleabend.png', 'assets/ui/icon-flitterwochen.png',
   'assets/ui/start.jpg', 'assets/ui/anleitung.jpg', 'assets/ui/abschluss.jpg', 'assets/ui/joker-5050.png',
   'assets/ui/paar-hallo.png', 'assets/ui/paar-denken.png', 'assets/ui/paar-jubel.png', 'assets/ui/paar-trost.png', 'assets/ui/paar-zeigen.png',
+  'assets/ui/figur-steht.png', 'assets/ui/figur-laeuft-1.png', 'assets/ui/figur-laeuft-2.png', 'assets/ui/figur-jubelt.png', 'assets/ui/figur-hinten.png',
   'assets/ui/apple-touch-icon.png', 'assets/ui/icon-192.png', 'assets/ui/icon-512.png', 'favicon.png', 'manifest.webmanifest',
   'assets/cards/weihnachtsmarkt.jpg', 'assets/cards/kino.jpg', 'assets/cards/dinner.jpg', 'assets/cards/spieleabend.jpg', 'assets/cards/flitterwochen.jpg', 'assets/cards/rueckseite.jpg',
 ];

@@ -137,6 +137,13 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .fine { margin: 16px 0 0; font-size: 14px; color: var(--ink-soft); }
 .fine-ok { margin-top: 4px; font-size: 13px; color: var(--ok); }
 .fine-ok::before { content: "✓ "; }
+/* Tipp „Zum Home-Bildschirm“ (nur iOS-Browser, main.js updateTip) */
+.a2hs { position: relative; display: flex; align-items: center; gap: 10px; max-width: 400px; margin: 12px auto 0; padding: 9px 40px 9px 14px; border-radius: 14px; text-align: left; background: rgba(255, 253, 248, .9); border: 1px solid var(--line); box-shadow: inset 0 0 0 3px rgba(255, 253, 248, .9), 0 4px 14px rgba(31, 42, 68, .08); }
+.a2hs p { margin: 0; font-size: 13.5px; line-height: 1.4; color: var(--ink-soft); }
+.a2hs b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.a2hs-share { width: 1.15em; height: 1.15em; vertical-align: -.2em; fill: none; stroke: var(--gold-ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.a2hs-x { position: absolute; top: 50%; right: 4px; width: 36px; height: 36px; transform: translateY(-50%); display: grid; place-items: center; padding: 0; border: 0; background: none; cursor: pointer; }
+.a2hs-x svg { width: 15px; height: 15px; fill: none; stroke: var(--ink-soft); stroke-width: 2; stroke-linecap: round; }
 
 /* Szene-Layout: Text im ruhigen oberen Bereich, Buttons unten, das Bild dazwischen frei */
 .scene-start .start-inner, .scene-end .start-inner { min-height: 100%; display: flex; flex-direction: column; justify-content: space-between; margin: 0 auto; padding-top: clamp(28px, 6vh, 56px); padding-bottom: clamp(18px, 4vh, 34px); }
@@ -534,18 +541,22 @@ body > .ar-rot { background: rgba(251, 247, 239, .97); color: var(--ink); font: 
 .fb-couple, .fb-couple * { pointer-events: none; }
 .fb-couple { position: absolute; z-index: 5; width: 0; height: 0; transition: left .32s linear, top .32s linear; }
 .fb-couple.instant { transition: none; }
+/* Sprite-Paar (figur-*.png, Leinwand 399x320, Füsse an der Unterkante): ca. 1,15 Feldhöhen, Füsse auf der Feldmitte */
 .couple-in {
-  position: absolute; left: 0; top: 0; width: calc(var(--cell) * 1.45);
-  transform: translate(-50%, -82%) translate(calc(var(--ax, 0) * var(--cell)), calc(var(--ay, 0) * var(--cell))); transition: transform .5s ease;
+  position: absolute; left: 0; top: 0; width: calc(var(--cell) * 1.15 * 399 / 320); aspect-ratio: 399 / 320;
+  transform: translate(-50%, -100%) translate(calc(var(--ax, 0) * var(--cell)), calc(var(--ay, 0) * var(--cell))); transition: transform .5s ease;
 }
+.couple-in::before { content: ""; position: absolute; left: 22%; right: 22%; bottom: -5%; height: 11%; border-radius: 50%; background: radial-gradient(closest-side, rgba(30, 18, 5, .45), rgba(30, 18, 5, 0)); }   /* Bodenschatten */
+.couple-in .fig { position: absolute; inset: 0; width: 100%; height: 100%; visibility: hidden; transform-origin: 50% 100%; }
+.couple-in .fig.on { visibility: visible; }
+.couple-in.flip .fig { transform: scaleX(-1); }
+.walking .couple-in[data-dir="u"] .fig, .walking .couple-in[data-dir="d"] .fig { animation: wip .32s ease-in-out infinite; }
+@keyframes wip { 0%, 100% { transform: translateY(0) rotate(-1.5deg); } 50% { transform: translateY(-4%) rotate(1.5deg); } }
+.fb-couple.cheer .fig { animation: fighop .45s ease-out 4; }
+@keyframes fighop { 50% { transform: translateY(-9%); } }
 .couple-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .arm { transition: transform .25s; }
 .leg { transform-origin: 50% 80%; }
-.walking .couple-svg { animation: bob .32s ease-in-out infinite; }
-.walking .leg-a { animation: step .32s ease-in-out infinite; }
-.walking .leg-b { animation: step .32s ease-in-out infinite -.16s; }
-@keyframes bob { 0%, 100% { transform: translateY(0) rotate(-1.5deg); } 50% { transform: translateY(-5%) rotate(1.5deg); } }
-@keyframes step { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 .cheer .couple-svg { animation: hop .45s ease-out 4; }
 .cheer .arm-l { transform: rotate(150deg); }
 .cheer .arm-r { transform: rotate(-150deg); }
