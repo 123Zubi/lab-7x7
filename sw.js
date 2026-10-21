@@ -1,7 +1,7 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-21-8';
+const VERSION = '2026-10-21-9';
 const APP = 'hl-app-' + VERSION;
 const CDN = 'hl-cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
 const CDN_HOSTS = ['aframe.io', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com']; // Google Fonts: zur Laufzeit cache-first
