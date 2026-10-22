@@ -98,6 +98,69 @@ export function makePoseSmoother(THREE, { minCF = 0.5, beta = 40, dCF = 1 } = {}
   };
   return api;
 }
+/**
+ * Nahbereich (docs/AR.md „Nah & iPad“). Einmal pro Seite auf MindARs Controller-Klasse (window.MINDAR.IMAGE.Controller):
+ * 1. Brennweite: MindAR nimmt fest 45° Bildwinkel über die Video-HÖHE an. Im Hochformat (720×1280) ist das die lange Seite,
+ *    echte Handy-/iPad-Kameras haben dort ≈ 60–70°. Die zu lange Brennweite schätzt das Brett zu weit weg und falsch geneigt:
+ *    flache Dinge passen trotzdem (Homografie), stehende Figuren werden aber falsch gross/schief, je näher, desto stärker.
+ *    Jetzt: tune.fov Grad über die LANGE Seite (Standard 70: iPhone 16 Pro Hauptkamera 24 mm ≈ 72°, iPads ≈ 62–65°), im Hoch- und Querformat gleich. Das Kamerabild-Seitenverhältnis bleibt.
+ * 2. Nah-Tracker: MindAR verfolgt immer auf dem 128-px-Abbild des Zielbilds (TRACKING_KEYFRAME = 1) und tastet das Video dafür
+ *    mit EINEM Pixel je Abbild-Pixel ab. Ist das Brett im Video viel grösser (nah), ist das stark unterabgetastet (Aliasing),
+ *    die Vorlagen passen nicht mehr → Abbruch. Ab tune.near × kurze Videoseite Brettbreite verfolgt ein zweiter Tracker auf dem
+ *    256-px-Abbild (liegt schon in targets.mind), darunter der normale (weit weg ist 128 px besser: gemessen).
+ *    tune.boardPx: letzte Brettbreite im Video (px) für Haltezeit und Hinweis.
+ */
+const tune = { fov: 70, near: 1, near2: 1.5, boardPx: 0, short: 1, img: null };
+/** 512-px-Tracking-Abbild aus target.jpg (Grauwert wie MindARs Compiler), Punkte vom 256-px-Abbild übernommen (× 2). */
+function bigKeyframe(kf, size) {
+  const im = tune.img, f = size / kf.width, w = Math.round(kf.width * f), h = Math.round(kf.height * f);
+  const g = Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d', { willReadFrequently: true });
+  g.drawImage(im, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data, data = new Uint8Array(w * h);
+  for (let i = 0; i < data.length; i++) data[i] = Math.floor((px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2]) / 3);
+  return { data, width: w, height: h, scale: kf.scale * f, points: kf.points.map((p) => ({ ...p, x: p.x * f, y: p.y * f })) };
+}
+function patchMindar() {
+  const C = window.MINDAR && window.MINDAR.IMAGE && window.MINDAR.IMAGE.Controller;
+  if (!C || C.prototype.__hlPatched) return;
+  C.prototype.__hlPatched = true;
+  const add0 = C.prototype.addImageTargetsFromBuffer;
+  C.prototype.addImageTargetsFromBuffer = function (buf) {
+    const W = this.inputWidth, H = this.inputHeight;
+    if (tune.fov > 0) {
+      const f = Math.max(W, H) / 2 / Math.tan((tune.fov * Math.PI) / 360);
+      this.projectionTransform = [[f, 0, W / 2], [0, f, H / 2], [0, 0, 1]];
+      this.projectionMatrix = this._glProjectionMatrix({ projectionTransform: this.projectionTransform, width: W, height: H, near: 10, far: 100000 });
+      setTimeout(() => window.dispatchEvent(new Event('resize')));   // MindARs _resize lief schon mit dem alten Bildwinkel
+    }
+    const res = add0.call(this, buf);
+    const T = this.tracker, P = this.projectionTransform;
+    tune.short = Math.min(W, H);
+    const tiers = [null, null, null];   // ponytail: Tensoren der Nah-Tracker werden beim Kamera-Neustart nicht freigegeben (wie MindARs eigener Tracker); selten, ein paar MB   // 0: MindARs 128-px-Tracker, 1: 256 px, 2: 512 px (selbst gebaut aus target.jpg)
+    let tier = 0;
+    const track0 = T.track.bind(T);
+    const make = (k) => {
+      const kf = T.trackingDataList.map((d) => (k === 1 ? d[0] : bigKeyframe(d[0], 512)));
+      return new T.constructor(T.markerDimensions, kf.map((d) => [d, d]), P, W, H);
+    };
+    T.track = (img, mv, idx) => {
+      const [mw, mh] = T.markerDimensions[idx];
+      const pr = (x, y) => { const Z = mv[2][0] * x + mv[2][1] * y + mv[2][3]; return [(P[0][0] * (mv[0][0] * x + mv[0][1] * y + mv[0][3])) / Z, (P[1][1] * (mv[1][0] * x + mv[1][1] * y + mv[1][3])) / Z]; };
+      const a = pr(0, mh / 2), b = pr(mw, mh / 2), px = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      if (Number.isFinite(px)) tune.boardPx = px;
+      const k = tune.boardPx / tune.short, lim = [Infinity, tune.near, tune.near2];
+      // Hysterese (15 %): kein Hin-und-her an einer Grenze
+      while (tier < 2 && lim[tier + 1] > 0 && k > lim[tier + 1]) tier++;
+      while (tier > 0 && !(lim[tier] > 0 && k > lim[tier] * 0.85)) tier--;
+      if (tier === 2 && !tune.img) tier = 1;
+      if (!tier) return track0(img, mv, idx);
+      tiers[tier] ||= make(tier);
+      return tiers[tier].track(img, mv, idx);
+    };
+    return res;
+  };
+}
+
 /** Lädt das Bildziel vorab: fehlt es oder ist es kaputt, sofort ein benannter Fehler statt langem Warten. */
 async function checkTargets(src) {
   let b = null;
@@ -417,8 +480,11 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     ig.updateMatrixWorld();
     ig.localToWorld(vC.set(0, 0, 0)).project(cam);
     ig.localToWorld(vE.set(R, 0, 0)).project(cam);
-    const rx = Math.hypot(vE.x - vC.x, vE.y - vC.y);   // Radius in NDC-x (Billboard: rechts = Bildschirm-rechts)
+    let rx = Math.hypot(vE.x - vC.x, vE.y - vC.y);     // Radius in NDC-x (Billboard: rechts = Bildschirm-rechts)
     if (!(rx > 0) || Math.abs(vC.z) > 1) return;       // hinter der Kamera / entartet
+    // Nah dran (Brett füllt das Bild) wird das Icon sonst bildschirmfüllend: Burst höchstens 40 % der kurzen Bildseite als Radius
+    const maxRx = 0.8 * Math.min(1, 1 / cam.aspect);   // NDC: Breite = 2
+    if (rx > maxRx) { ig.scale.multiplyScalar(maxRx / rx); rx = maxRx; }
     const ry = rx * cam.aspect, bottom = ry * 1.15;    // NDC-y ist um das Seitenverhältnis gestreckt; Schriftzug reicht 1,36 R tief
     const dx = Math.max(0, -1 - (vC.x - rx)) - Math.max(0, vC.x + rx - 1);
     const dy = Math.max(0, -1 - (vC.y - bottom)) - Math.max(0, vC.y + ry - 1);
@@ -693,8 +759,10 @@ const STYLE = `
 .ar-scan .ar-msg small{display:block;font-weight:400;font-size:13px;opacity:.9;margin-top:4px}
 .ar-scan.lost .ar-frame{display:none}
 .ar-scan.lost{justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 64px)}
+.ar-near{position:absolute;left:50%;top:calc(env(safe-area-inset-top) + 64px);transform:translateX(-50%);z-index:3;margin:0;pointer-events:none;white-space:nowrap;padding:8px 14px;border-radius:999px;background:#f2b632;border:3px solid #1b1f3b;box-shadow:3px 3px 0 #1b1f3b;color:#1b1f3b;font:800 15px/1.2 Nunito,system-ui,sans-serif}
+.ar-near[hidden]{display:none}
 .ar-rot{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;padding:24px;background:#1b1f3b;color:#fff8e8;font:700 20px/1.4 Nunito,system-ui,sans-serif;text-align:center}
-@media (orientation:landscape) and (max-height:500px){.ar-rot{display:flex}}
+@media (orientation:landscape) and (max-height:599px){.ar-rot{display:flex}}
 @keyframes ar-pulse{50%{transform:scale(.97);opacity:.75}}
 @media (prefers-reduced-motion:reduce){.ar-scan .ar-frame{animation:none}}`;
 
@@ -719,6 +787,11 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   const sm = { minCF: num('smooth', 0.5), beta: num('sbeta', 40), dCF: num('sdcf', 1) };
   const iconSmooth = { minCF: num('ismooth', 0.4) };
   const HOLD = num('hold', 1.2), FADE = 0.4, RES = num('res', 720), MISS = num('miss', 20), WARM = num('warm', 4);
+  //   fov     Bildwinkel der Kamera über die lange Bildseite in Grad (0 = MindAR-Vorgabe 45° über die Höhe), near: ab welcher
+  //           Brettbreite (× kurze Videoseite) der 256-px-Tracker übernimmt (0 = nie), nhold: Haltezeit, wenn das Brett zuletzt
+  //           gross im Bild war (ab nfar × kurze Seite); dazu der Hinweis „Etwas weiter weg halten“
+  tune.fov = num('fov', 70); tune.near = num('near', 1); tune.near2 = num('near2', 1.5);
+  const NHOLD = num('nhold', 5), NFAR = num('nfar', 1.6);
 
   // Bildschirm wach halten (Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
   let destroyed = false, wl = null, wlBusy = false;
@@ -736,13 +809,14 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   const [aspect] = await Promise.all([
     new Promise((res) => {
       const i = new Image();
-      i.onload = () => res(i.naturalHeight / i.naturalWidth || 1);
+      i.onload = () => { tune.img = i; res(i.naturalHeight / i.naturalWidth || 1); };
       i.onerror = () => res(1);
       i.src = 'assets/target.jpg';
     }),
     (async () => {
       if (!window.AFRAME) await loadScript(AFRAME_SRC);
       if (!window.AFRAME.components['mindar-image']) await loadScript(MINDAR_SRC);
+      patchMindar();
     })(),
     checkTargets(targetSrc),
   ]).catch(bail);
@@ -776,9 +850,13 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   document.body.append(rot);   // ausserhalb des Hosts: muss auch über dem Quiz-Panel liegen
 
   let tracking = false, stage = null, iv = 0, live = false, restarting = false, fatalSent = false, visT = 0, rotT = 0;
+  const nearEl = Object.assign(document.createElement('p'), { className: 'ar-near', hidden: true, textContent: '↕ Etwas weiter weg halten' });
+  container.append(nearEl);
+  let nearLoss = false;   // Brett war beim Verlust gross im Bild → länger halten (NHOLD) und passender Hinweis
   const showLost = () => {
     scan.classList.add('lost');
-    msg.innerHTML = 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
+    msg.innerHTML = nearLoss ? 'Zu nah dran – haltet die Kamera etwas weiter weg<small>So sieht sie mehr vom Brett. Das Spiel läuft weiter.</small>'
+      : 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
     scan.hidden = false;
   };
 
@@ -819,7 +897,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
     tc.updateWorldMatrix = function (wm) {
       upd0.call(this, wm);
       const now = performance.now();
-      if (!wm) { if (anchor.visible && !lostAt) lostAt = now; return; }
+      if (!wm) { if (anchor.visible && !lostAt) { lostAt = now; nearLoss = tune.boardPx / tune.short >= NFAR; } return; }
       if (!anchor.visible) smoother.reset();
       smoother.filterMatrix(targetEl.object3D.matrix, (now - poseT) / 1000, anchor.matrix);
       anchor.matrixWorldNeedsUpdate = true;
@@ -830,9 +908,12 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   (function holdTick() {
     if (destroyed) return;
     if (lostAt) {
-      const k = (performance.now() - lostAt) / 1000 - HOLD;
+      const k = (performance.now() - lostAt) / 1000 - (nearLoss ? NHOLD : HOLD);
       if (k >= FADE) { hideNow(); showLost(); } else setFade(k > 0 ? 1 - k / FADE : 1);
     }
+    // „Etwas weiter weg halten“: solange das Brett sehr gross im Bild ist (oder nah verloren und noch gehalten)
+    const big = anchor.visible && (lostAt ? nearLoss : tune.boardPx / tune.short >= (nearEl.hidden ? NFAR : NFAR * 0.9));
+    if (nearEl.hidden === big) nearEl.hidden = !big;
     requestAnimationFrame(holdTick);
   })();
   if (S._startAR && S._startVideo) {
@@ -880,6 +961,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
     restarting = true;
     if (targetEl.object3D.visible && targetComp()) targetComp().updateWorldMatrix(null);
     hideNow();   // altes Bild nicht stehen lassen (keine Haltezeit beim Neustart)
+    nearLoss = false;
     scan.classList.remove('lost');
     msg.innerHTML = 'Kamera startet neu …<small>Haltet die Kamera aufs Brett</small>';
     scan.hidden = false;
@@ -922,11 +1004,12 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
       if (camDead() || w.paused || (s && s.getVideoTracks().some((t) => t.muted))) restartCam();
     }, 2500);
   };
-  // Zurück ins Hochformat: haben sich die Videomasse geändert, passt MindARs Eingabegrösse nicht mehr → Neustart
-  const portrait = matchMedia('(orientation: portrait)');
+  // Gerät gedreht (Handy zurück ins Hochformat, iPad in beide Richtungen): haben sich die Videomasse geändert, passt MindARs
+  // Eingabegrösse nicht mehr → Neustart. Handy quer zeigt nur den Hinweis „Bitte im Hochformat“ (dort kein Neustart).
+  const portrait = matchMedia('(orientation: portrait)'), phoneLand = matchMedia('(orientation: landscape) and (max-height: 599px)');
   const onOrient = () => {
     clearTimeout(rotT);
-    if (!portrait.matches || !live) return;
+    if (phoneLand.matches || !live) return;
     rotT = setTimeout(() => {   // iOS meldet die neuen Masse erst etwas später
       const v = sys().video, c = sys().controller;
       if (v && c && (v.videoWidth !== c.inputWidth || v.videoHeight !== c.inputHeight)) restartCam();

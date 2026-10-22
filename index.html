@@ -52,6 +52,7 @@
         <button id="btn-plain" class="btn btn-ghost">Ohne Kamera spielen</button>
       </div>
       <p class="fine rise" style="--d:6">Haltet das Spielbrett bereit.</p>
+      <button id="btn-setup" class="setup-link rise" style="--d:6" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M3.5 12h17M12 3.5v17"/></svg>Plättchen abgefallen? Brett richtig einsetzen</button>
       <div id="a2hs" class="a2hs rise" style="--d:7" role="note" hidden>
         <p>Für Vollbild: <b>Teilen</b> <svg class="a2hs-share" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 9.5H6.5a1 1 0 0 0-1 1V20a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-9.5a1 1 0 0 0-1-1H16"/><path d="M12 14.5V3M8.5 6.5 12 3l3.5 3.5"/></svg> → <b>„Zum Home-Bildschirm“</b> und die App von dort starten.</p>
         <button id="a2hs-close" class="a2hs-x" aria-label="Tipp schließen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
@@ -100,6 +101,9 @@
       <button id="guide-cancel" class="link-btn" hidden></button>
     </div>
   </section>
+
+  <!-- Setup-Guide fürs Spielbrett (vom Startmenü, js/setup.js) -->
+  <section id="setup" class="guide setup" hidden role="dialog" aria-modal="true" aria-labelledby="setup-title"></section>
 
   <!-- Abschluss -->
   <section id="screen-end" class="screen end" hidden>

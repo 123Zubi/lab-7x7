@@ -1,6 +1,7 @@
 // Messungen AR-Stabilität (docs/AR.md „Runde 5“): Fake-Kamera + echtes MindAR, createArStage direkt in app/index.html.
 //   python3 -m http.server 8105 --bind 127.0.0.1      (im Projektordner)
-//   node app/dev/ar-messung.mjs <mode> [url-query]     mode = rest|icon|shift|roll|dist|detect
+//   node app/dev/ar-messung.mjs <mode> [url-query]     mode = rest|icon|shift|roll|dist|detect|nah
+// env PORT (8105), PHOTO (IMG_6831 oder Pfad relativ zu app/, z. B. ../Fotos/Nahaufnahmen/IMG_6862.jpg), VW/VH (Viewport 390×844)
 // env: NOISE (Bildrauschen, 0.15), W/H (Videogrösse, 720×1280), ICON=1 (shift: Icon statt Brett), ZS (detect: Zoomstufen),
 //      PLAYWRIGHT (Ordner mit node_modules/playwright). Ausgabe: JSON je Lauf; „roh“ = MindAR-Pose, „anzeige“/„brett“ = Anker.
 import { createRequire } from 'module';
@@ -8,21 +9,23 @@ const require = createRequire(process.env.PLAYWRIGHT || '/Users/janoszuberbuhler
 const { chromium } = require('playwright');
 const [MODE, QUERY = ''] = process.argv.slice(2);
 const W = +(process.env.W || 720), H = +(process.env.H || 1280), PHOTO = process.env.PHOTO || 'IMG_6831';
-const NOISE = +(process.env.NOISE ?? 0.15);
+const NOISE = +(process.env.NOISE ?? 0.15), PORT = process.env.PORT || 8105;
+const VW = +(process.env.VW || 390), VH = +(process.env.VH || 844);
+const SRC = PHOTO.includes('/') ? PHOTO : `../Fotos/${PHOTO}.jpeg`;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const std = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
 const r2 = (x) => Math.round(x * 100) / 100;
 
 async function open(zoom = 1, query = QUERY) {
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 2 });
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
   page.on('console', (m) => m.type() === 'error' && !m.text().includes('favicon') && errs.push(m.text()));
-  await page.goto(`http://localhost:8105/app/index.html?reset=1&${query}`);
-  const ok = await page.evaluate(async ({ PHOTO, NOISE, W, H, zoom }) => {
+  await page.goto(`http://localhost:${PORT}/app/index.html?reset=1&${query}`);
+  const ok = await page.evaluate(async ({ SRC, NOISE, W, H, zoom }) => {
     const fc = await import('./dev/fake-camera.js?v=' + Date.now());
-    const cv = await fc.install(`../Fotos/${PHOTO}.jpeg`, { wobble: 0, noise: NOISE, width: W, height: H });
+    const cv = await fc.install(SRC, { wobble: 0, noise: NOISE, width: W, height: H });
     cv.zoom = zoom;
     const host = Object.assign(document.createElement('div'), { id: 'mhost' });
     host.style.cssText = 'position:fixed;inset:0;z-index:9999';
@@ -35,7 +38,7 @@ async function open(zoom = 1, query = QUERY) {
     tg.addEventListener('targetLost', () => (__raw.lost = performance.now()));
     tg.addEventListener('targetUpdate', () => __raw.upd++);
     return true;
-  }, { PHOTO, NOISE, W, H, zoom }).catch((e) => 'ERR ' + e.message);
+  }, { SRC, NOISE, W, H, zoom }).catch((e) => 'ERR ' + e.message);
   return { page, errs, ok };
 }
 // in der Seite: Bildschirmpunkt eines Zielpunkts auf dem angezeigten Anker (neu: 'ar-anchor', alt: #ar-target)
@@ -155,10 +158,57 @@ async function detect() {
   }
   console.log(JSON.stringify({ mode: 'detect', q: QUERY, W, H, out }));
 }
+// Bildschirmfoto (env OUT=pfad.png, ZOOM, STATION 0..4 = Paar instant auf Station), z. B. für den Bildwinkel-Vergleich
+async function shot() {
+  const { page, errs } = await open(+(process.env.ZOOM || 1));
+  const ok = await page.evaluate(async ({ HELP, ST }) => { eval('(' + HELP + ')()'); if (!(await __waitShown(8000))) return false; await __stage.walkTo(ST, { instant: true }); await new Promise((r) => setTimeout(r, 2500)); return true; }, { HELP: HELPERS.toString(), ST: +(process.env.STATION ?? 4) });
+  await page.screenshot({ path: process.env.OUT });
+  console.log(JSON.stringify({ mode: 'shot', q: QUERY, ok, out: process.env.OUT, errs }));
+  await page.close();
+}
+// Nahbereich (docs/AR.md „Nah & iPad“): Erkennung bei Zoom 1 (Foto wie aufgenommen), sonst aus der Distanz (Zoom 0,6/0,45/0,35);
+// danach langsam hineinzoomen (+3 % alle 250 ms bis Zoom ZMAX, Standard 5) und notieren, wann MindAR das Brett verliert.
+// Brettbreite = Breite der ganzen 1-Einheit-Zielfläche in Video-px (bei Nahaufnahmen grösser als das Video).
+async function nah() {
+  const out = { mode: 'nah', q: QUERY, photo: SRC.split('/').pop(), W, H };
+  let page, errs, z0 = null, tDet = null;
+  for (const z of (process.env.ZS || '1,0.6,0.45,0.35').split(',').map(Number)) {
+    ({ page, errs } = await open(z));
+    tDet = await page.evaluate(async ({ HELP }) => { eval('(' + HELP + ')()'); const t0 = performance.now(); return (await __waitShown(+(new URLSearchParams(location.search).get('wait') || 6000))) ? Math.round(performance.now() - t0) : null; }, { HELP: HELPERS.toString() });
+    if (tDet != null) { z0 = z; break; }
+    await page.close(); page = null;
+  }
+  Object.assign(out, { erkanntBeiZoom: z0, ms: tDet });
+  if (page) {
+    const r = await page.evaluate(async ({ HELP, ZMAX }) => {
+      eval('(' + HELP + ')()');
+      const sc = document.querySelector('a-scene'), tg = document.querySelector('#ar-target');
+      const vid = sc.systems['mindar-image-system'].video, rect = sc.canvas.getBoundingClientRect();
+      const f = Math.max(rect.width / vid.videoWidth, rect.height / vid.videoHeight);
+      const bw = () => { const a = __pt(-0.5, 0, 0, tg.object3D.matrix), b = __pt(0.5, 0, 0, tg.object3D.matrix); return Math.round(Math.hypot(a[0] - b[0], a[1] - b[1]) / f); };
+      await new Promise((r) => setTimeout(r, 800));
+      __raw.lost = 0;
+      let z = __fakeCam.zoom || 1, w = bw(), w1 = null; const w0 = w;
+      while (z < ZMAX && !__raw.lost) {
+        z *= 1.03; __fakeCam.zoom = z;
+        await new Promise((r) => setTimeout(r, 250));
+        if (!__raw.lost) { w = bw(); if (z >= 1 && w1 == null) w1 = w; }
+      }
+      let held = null;
+      if (__raw.lost) { const t = performance.now(); while (performance.now() - t < 8000) { if (!__shown()) { held = Math.round(performance.now() - __raw.lost); break; } await new Promise((r) => setTimeout(r, 20)); } }
+      return { brettPxStart: w0, brettPxBeiZoom1: w1, verlorenBeiZoom: __raw.lost ? Math.round(z * 100) / 100 : '>' + ZMAX, brettPxZuletzt: w, einblendungWegNachMs: held };
+    }, { HELP: HELPERS.toString(), ZMAX: +(process.env.ZMAX || 5) });
+    Object.assign(out, r); await page.close();
+  }
+  out.errs = errs;
+  console.log(JSON.stringify(out));
+}
 if (MODE === 'shift') await latency(false);
 if (MODE === 'roll') await latency(true);
 if (MODE === 'rest') await rest(false);
 if (MODE === 'icon') await rest(true);
 if (MODE === 'dist') await dist();
 if (MODE === 'detect') await detect();
+if (MODE === 'nah') await nah();
+if (MODE === 'shot') await shot();
 await browser.close();

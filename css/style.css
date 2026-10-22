@@ -631,3 +631,112 @@ body.debug-on { --chip-top: calc(var(--safe-t) + 90px); }
   .cf-ribbon { padding: 6px 12px; font-size: 13.5px; }
 }
 @media (max-width: 350px) { .guide-foot .btn { font-size: 16.5px; padding-inline: 14px; } }
+
+/* ---- Startmenü: Link zum Setup-Guide (dezent, aber gut sichtbar) ---- */
+.setup-link { display: flex; align-items: center; gap: 8px; width: max-content; max-width: 100%; margin: 10px auto 0; text-align: left; min-height: 44px; padding: 6px 14px; border: 2.5px solid var(--ink); border-radius: 999px; background: var(--teal-pale); color: var(--ink); font: 800 14px/1.25 var(--sans); cursor: pointer; box-shadow: var(--sh-sm); }
+.setup-link:active { transform: translate(2px, 2px); box-shadow: none; }
+.setup-link svg { width: 18px; height: 18px; flex: none; fill: var(--white); stroke: var(--ink); stroke-width: 2; }
+
+/* ---- Setup-Guide „Brett richtig einsetzen“ (js/setup.js), nutzt die Anleitungs-Bausteine ---- */
+.setup { z-index: 12; }
+body .setup .guide-inner { padding-top: 22px; }
+.setup .guide-inner::before { display: none; }
+.st-orient { display: flex; gap: 14px; align-items: center; }
+.st-orient p, .st-p { margin: 0; font-size: 16px; line-height: 1.45; text-wrap: pretty; }
+.st-mini { width: 92px; flex: none; filter: drop-shadow(3px 3px 0 var(--ink)); }
+.st-red { color: #c62828; }
+.st-board { position: relative; margin: 14px 0 0; border-radius: 6px; box-shadow: 0 0 0 3px var(--ink), 5px 5px 0 3px var(--ink); overflow: hidden; }
+.st-board img { display: block; width: 100%; height: auto; }
+.st-grid { position: absolute; display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: repeat(7, 1fr); }
+.st-cell { margin: 0; padding: 0; border: 1px solid rgba(255, 255, 255, .55); background: none; cursor: pointer; }
+.st-cell.on { border: 3px solid var(--mustard); outline: 2px solid var(--ink); outline-offset: -5px; background: rgba(242, 182, 50, .18); }
+.st-zoomwrap { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 18px 0 0; }
+.st-zoom { position: relative; width: min(62vw, 260px); aspect-ratio: 1; border-radius: 8px; background: var(--ivory-2) no-repeat; border: var(--ol); box-shadow: var(--sh); touch-action: pan-y; }
+.st-tile { position: absolute; border: 2.5px dashed var(--mustard); border-radius: 6px; outline: 1.5px solid var(--ink); pointer-events: none; }
+.st-nav { flex: none; width: 46px; height: 46px; display: grid; place-items: center; padding: 0 0 4px; border: 2.5px solid var(--ink); border-radius: 50%; background: var(--white); color: var(--ink); font: 400 30px/1 var(--display); cursor: pointer; box-shadow: var(--sh-sm); }
+.st-nav:active { transform: translate(2px, 2px); box-shadow: none; }
+.st-cap { margin: 12px 0 0; text-align: center; font: 700 16px/1.3 var(--sans); }
+.st-cap b { font: 400 21px/1.1 var(--display); letter-spacing: .04em; }
+.st-swipe { margin: 4px 0 0; text-align: center; font-size: 13.5px; color: var(--ink-soft); }
+.st-check { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.st-check li { position: relative; padding-left: 34px; font-size: 16px; line-height: 1.4; }
+.st-check li::before { content: "✓"; position: absolute; left: 0; top: -2px; width: 24px; height: 24px; display: grid; place-items: center; border: 2.5px solid var(--ink); border-radius: 5px; background: var(--teal); color: var(--white); font: 900 15px/1 var(--sans); box-shadow: var(--sh-sm); }
+@media (min-width: 700px) and (min-height: 700px) {
+  .setup-link { font-size: 15.5px; }
+  .st-orient p, .st-p, .st-check li { font-size: 18px; }
+  .st-mini { width: 110px; }
+  .st-zoom { width: 300px; }
+  .st-cap { font-size: 18px; } .st-cap b { font-size: 24px; }
+}
+/* Tablet quer: Brett links, Zoom rechts daneben */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) {
+  .setup .guide-inner { max-width: 940px; }
+  .st-pick { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: center; }
+  .st-pick .st-zoom { width: 260px; }
+}
+
+/* ---- Tablets (iPad): Platz wirklich nutzen. Handy-Layout (< 700 px Breite) bleibt unverändert ---- */
+/* Hochformat: grösseres Brett (Panel schmaler und zentriert), grössere Schrift, Start/Anleitung mittig mit max. Breite */
+@media (min-width: 700px) and (min-height: 700px) {
+  .start-inner { max-width: 540px; }
+  .names { font-size: clamp(62px, 9vw, 84px); }
+  .subtitle { font-size: 25px; }
+  .lead, .scene-start .lead { font-size: 20px; }
+  .kicker { font-size: 18px; }
+  .btn { min-height: 60px; font-size: 20px; }
+  .start-btns { max-width: 440px; margin: 0 auto; }
+  .fine { font-size: 15px; }
+  .guide-inner { max-width: 600px; padding-inline: 32px; }
+  .scene-guide .guide-inner { padding-top: 300px; }
+  .scene-guide .guide-inner::before { left: 24px; right: 28px; height: 266px; }
+  .guide-intro { font-size: 19px; }
+  .guide-steps li { font-size: 18px; padding-left: 46px; }
+  .guide-tips li, .guide-warn { font-size: 17.5px; }
+  .guide-foot .btn, .guide-status { max-width: 460px; }
+  .end-title { font-size: 46px; }
+  .scene-end .end-title { font-size: 46px; }
+  .scene-end .end-wish { font-size: 34px; }
+  .hud { margin: 12px 16px 0; }
+  .hud-title { font-size: 28px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .pips { gap: 9px; } .pips li { width: 15px; height: 15px; } .pips li.star { width: 18px; height: 18px; }
+  .panel { width: 100%; max-width: 680px; margin-inline: auto; padding: 20px 22px calc(16px + var(--safe-b)); border-left: var(--ol); border-right: var(--ol); max-height: 50vh; max-height: 50dvh; }
+  .bubble { font-size: 20px; }
+  .avatars { width: 96px; height: 106px; }
+  .q-text > span { font-size: 20px; padding: 10px 16px; }
+  .answers { gap: 9px; }
+  .ans-in { min-height: 50px; font-size: 18px; gap: 13px; }
+  .letter { width: 32px; height: 32px; font-size: 20px; }
+  .q-msg { font-size: 15.5px; }
+  .q-tag { font-size: 14px; }
+  .joker { min-height: 36px; font-size: 14px; }
+  .tap-hint { font-size: 24px; }
+  .cf-stage { --cw: min(70vw, 420px, calc((100dvh - 220px) * 2 / 3)); }
+  .cf-body { font-size: 16px; }
+  .cf-ribbon { font-size: 16.5px; }
+  .modal-card { max-width: 420px; }
+  .toast { width: min(560px, calc(100% - 28px)); margin-inline: auto; }
+}
+/* Querformat (Tablets ab 900 px Breite): zwei Spalten. Links Kamerabild bzw. Brett gross, rechts die Seitenleiste
+   mit Titel, Sprechblase, Quiz und Buttons – nichts liegt mehr über dem Brett. Handys quer zeigen weiter „Bitte im Hochformat“. */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) {
+  :root { --side: clamp(360px, 36vw, 460px); }
+  .game { display: grid; grid-template-columns: minmax(0, 1fr) var(--side); grid-template-rows: auto minmax(0, 1fr); }
+  .game > .hud { grid-column: 2; grid-row: 1; margin: 12px 14px 0; }
+  .hud { gap: 8px; } .hud-title { font-size: clamp(22px, 2.3vw, 28px); } .pips { gap: 6px; }
+  #stage, .mode-ar #stage { grid-column: 1; grid-row: 1 / 3; position: relative; inset: auto; border-right: var(--ol); }
+  .game > .panel, .mode-ar .game > .panel {
+    grid-column: 2; grid-row: 2; align-self: start; width: auto; max-width: none; max-height: calc(100% - 28px);
+    margin: 14px 14px 14px; padding: 18px 18px 16px; border: var(--ol); border-radius: 20px; box-shadow: var(--sh);
+  }
+  .panel.in { animation: fadein .3s var(--ease); }
+  .game > .chip { left: calc((100% - var(--side)) / 2); max-width: calc(100% - var(--side) - 28px); }
+  .home-ask { left: auto; right: 14px; }
+  .debug { right: calc(var(--side) + 6px); }
+  .toast { right: calc(var(--side) + 14px); width: min(560px, calc(100% - var(--side) - 28px)); }
+  .answers { gap: 8px; }
+  .ans-in { min-height: 46px; font-size: 17px; }
+  .q-text > span { font-size: 19px; }
+  .bubble { font-size: 19px; }
+  .avatars { width: 84px; height: 94px; }
+}

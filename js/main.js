@@ -564,6 +564,11 @@ function boot() {
   const fresh = () => state.station === 0 || (state.station === 1 && step() === 'ready' && !state.solved.length);
   $('#btn-ar').onclick = () => { sound.click(); startGame('ar', fresh()); };
   $('#btn-plain').onclick = () => { sound.click(); startGame('fallback', fresh()); };
+  $('#btn-setup').onclick = async () => {   // Setup-Guide fürs Spielbrett (Plättchen abgefallen)
+    sound.click();
+    const { openSetup } = await import('./setup.js');
+    openSetup($('#setup'), () => $('#btn-setup').focus());
+  };
   document.querySelectorAll('[data-img]').forEach((el) => el.classList.toggle('has-img', hasImg(el.dataset.img)));
   document.body.classList.toggle('has-paper', hasImg('paper'));   // Papier bringt eigene Eck-Ornamente mit → CSS-Rahmen aus
   ['start', 'guide', 'end'].forEach((k) => document.body.classList.toggle('scene-' + k, hasImg('bg-' + k)));   // Szenen-Layout nur mit Bild
