@@ -10,7 +10,7 @@ import { registerCouple } from './couple3d.js';
 
 const AFRAME_SRC = 'https://aframe.io/releases/1.5.0/aframe.min.js';
 const MINDAR_SRC = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js';
-const STEP_S = 0.6;        // Sekunden pro Feld
+const STEP_S = 0.86;       // Sekunden pro Feld (0,7x Tempo, damit man zusehen kann)
 const COUPLE_H = 0.12;     // Paar-Höhe in Zieleinheiten (Modell ist 1.0 hoch)
 const PODIUM_H = 0.05;     // ponytail: geschätzte Höhe des goldenen Podests auf (4,4); am echten Brett mit ?debug=1 nachjustieren
 const DOT_R = 0.026;       // Radius der echten Farbpunkte (inkl. Goldrand ≈ 0.03)

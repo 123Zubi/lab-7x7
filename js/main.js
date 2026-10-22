@@ -26,7 +26,29 @@ const live = {
   onDotTap: (cb) => { dotCb = cb; if (stage && stage.onDotTap) stage.onDotTap(cb); },
 };
 
-const show = (name) => ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s).hidden = s !== name));
+const show = (name) => { ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s).hidden = s !== name)); fitScene(); };
+
+/* Szenenbild (start.jpg/abschluss.jpg, 828x1242) so legen, dass die Gesichter zwischen Titelkasten und Buttons frei bleiben.
+ *  Gesichter-Box in Bildanteilen; start: Bild füllt die Breite, oben Himmelfarbe; end: notfalls kleiner, unten bündig (Rand Elfenbein). */
+const FACES = { start: { x: 0.545, y0: 0.24, y1: 0.34 }, end: { x: 0.54, y0: 0.15, y1: 0.29, shrink: true } };
+function fitScene() {
+  for (const k of ['start', 'end']) {
+    const scr = $('#screen-' + k), f = FACES[k];
+    if (scr.hidden || !document.body.classList.contains('scene-' + k)) continue;
+    const r = scr.getBoundingClientRect(), W = r.width, H = r.height, pad = 10;
+    const b1 = scr.querySelector('.start-top, .end-top').getBoundingClientRect().bottom - r.top + pad;
+    const b2 = scr.querySelector('.start-bottom, .btn-again').getBoundingClientRect().top - r.top - pad;
+    let s = Math.max(W / 828, H / 1242);
+    if (f.shrink) s = Math.min(s, (H - b1) / (1242 * (1 - f.y0)));
+    const w = 828 * s, h = 1242 * s, top = b1 - f.y0 * h, bot = b2 - f.y1 * h;
+    const y = f.shrink ? H - h : Math.max(H - h, top <= bot ? top : (top + bot) / 2);
+    const x = w > W ? Math.min(0, Math.max(W - w, W / 2 - f.x * w)) : (W - w) / 2;
+    scr.style.backgroundSize = `${w}px ${h}px`;
+    scr.style.backgroundPosition = `${x}px ${y}px`;
+  }
+}
+addEventListener('resize', fitScene);
+document.fonts.ready.then(fitScene);
 
 /* ---------- Konfetti ---------- */
 const cv = $('#confetti'), g = cv.getContext('2d');

@@ -1,7 +1,7 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-22-2';
+const VERSION = '2026-10-22-3';
 const PREFIX = 'hl-'; // eigener Präfix: auf demselben Origin laufen andere Apps (z. B. /Lab-7x7_Kitschig/ mit 'kitschig-…') – deren Caches nie anfassen
 const APP = PREFIX + 'app-' + VERSION;
 const CDN = PREFIX + 'cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben

@@ -14,7 +14,7 @@ const lerp = (a, b, k) => a + (b - a) * k;
 // outerZ/innerZ: Armwinkel gegen "haengt runter" (rad), outer = nach aussen, inner = zur Mitte.
 function pose(anim, t, side) {
   if (anim === 'walk') {
-    const f = t * 7, s = Math.sin(f);
+    const f = t * 4.9, s = Math.sin(f);   // Schrittfrequenz passend zu STEP_S 0,86 s in ar.js (vorher 7 bei 0,6 s)
     return { y: Math.abs(s) * 0.025, leg: s * 0.7, outerX: -s * 0.6, outerZ: 0.18, innerX: s * 0.08, innerZ: 0.31,
              headZ: Math.sin(f) * 0.04 * side, bodyZ: s * 0.03, skirt: s * 0.05, toss: 0 };
   }
