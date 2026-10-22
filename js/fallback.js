@@ -21,11 +21,11 @@ const loadImg = (src) => new Promise((res) => { const i = new Image(); i.onload 
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html) n.innerHTML = html; return n; };
 const at = (n, [r, c]) => { n.style.left = ((c - 0.5) / 7) * 100 + '%'; n.style.top = ((r - 0.5) / 7) * 100 + '%'; };
 
-/** Bild-Platzhalter: Ist in style.css `--img-<name>` gesetzt (z. B. url("../assets/ui/chest.png")), zeigt der Slot das Bild statt des SVG. */
+/** Bild-Platzhalter: Ist in style.css `--img-<name>` gesetzt (z. B. url("../assets/ui/chest.webp")), zeigt der Slot das Bild statt des SVG. */
 export const hasImg = (name) => getComputedStyle(document.documentElement).getPropertyValue('--img-' + name).trim() !== 'none';
 export const art = (name, svg, cls = '') => `<span class="art art-${name}${hasImg(name) ? ' has-img' : ''} ${cls}" aria-hidden="true">${svg}</span>`;
 
-// Feine Linien-Icons für die Stationen (Reihenfolge = STATIONS, dann Finale). Später durch icon-*.png ersetzbar.
+// Feine Linien-Icons für die Stationen (Reihenfolge = STATIONS, dann Finale). Später durch icon-*.webp ersetzbar.
 const ICON = (d) => `<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 export const STATION_KEYS = ['weihnachtsmarkt', 'kino', 'dinner', 'spieleabend', 'flitterwochen'];
 const ICONS = [

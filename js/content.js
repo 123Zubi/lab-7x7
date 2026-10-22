@@ -127,3 +127,6 @@ export const END = {
   wish: 'Alles Liebe zur Hochzeit',
   note: 'Möge euer gemeinsamer Weg immer zum Schatz in der Mitte führen.',
 };
+
+// „Zurück zum Start“ (Tipp auf den Titel im HUD)
+export const HOME = { ask: 'Zurück zum Start? Euer Spielstand bleibt gespeichert.', yes: 'Ja', no: 'Nein' };

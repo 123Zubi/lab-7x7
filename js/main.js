@@ -1,7 +1,7 @@
 // Ablaufsteuerung: Start → Anleitung → (AR | Fallback) → je Station: bereit? → Frage → Paar läuft zum Feld → Karte schwebt → Vollbild-Karte
 // → nach Karte 4: letzte Frage (5) → Podest → Flitterwochen-Karte → Abschluss. (Neuer Ablauf, docs/ARCHITEKTUR.md 2026-10-21; keine Geldbeträge.)
 import { state, save, reset, isDebug } from './state.js';
-import { STATIONS, FINALE, INTRO, GUIDE, END, READY, CARDS, CARD_UI, POSES } from './content.js';
+import { STATIONS, FINALE, INTRO, GUIDE, END, READY, CARDS, CARD_UI, POSES, HOME } from './content.js';
 import { sound, isMuted, toggleMute } from './sound.js';
 import { createQuiz, ensureQuestions } from './quiz.js';
 import { createFallbackStage, coupleSVG, stationBadge, hasImg, art } from './fallback.js';
@@ -19,6 +19,7 @@ const panel = $('#panel');
 let stage = null;
 let quiz = null;
 let dotCb = null;
+let session = 0;   // zählt hoch bei „Zurück zum Start“: ältere, noch wartende Abläufe (run, AR-Start) merken daran, dass sie verwaist sind
 // Das Quiz spricht nur mit diesem Stellvertreter: die Bühne darf mitten im Spiel wechseln (AR ↔ Fallback).
 const live = {
   highlightDot: (c) => stage && stage.highlightDot && stage.highlightDot(c),
@@ -30,7 +31,7 @@ const show = (name) => ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s
 /* ---------- Konfetti ---------- */
 const cv = $('#confetti'), g = cv.getContext('2d');
 let parts = [], raf = 0;
-const COLORS = ['#c9a24a', '#e3c77d', '#f1dc9f', '#d8a7a0', '#ecc9c2', '#ffffff', '#b9c7a8'];
+const COLORS = ['#f2b632', '#ef6f5c', '#2bb3a6', '#22346b', '#ffd166', '#ffffff', '#1b1f3b'];   // Comic-Palette
 function confetti(n = 120) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) n = Math.ceil(n / 4);
   const d = devicePixelRatio || 1;
@@ -81,7 +82,7 @@ const probe = (url) => {
 const stop = (k) => (k < 4 ? STATIONS[k] : FINALE);
 // Gefundenes Icon gilt überall (Badges lesen --img-<theme>, siehe style.css)
 // absolute URL: eine relative URL in einer Inline-Variable löst der Browser sonst gegen css/ auf
-const iconImg = (theme) => probe(`assets/ui/icon-${theme}.png`).then((u) => { if (u) document.documentElement.style.setProperty('--img-' + theme, `url("${new URL(u, location.href).href}")`); return u; });
+const iconImg = (theme) => probe(`assets/ui/icon-${theme}.webp`).then((u) => { if (u) document.documentElement.style.setProperty('--img-' + theme, `url("${new URL(u, location.href).href}")`); return u; });
 const cardImgs = (theme) => Promise.all([probe(`assets/cards/${theme}.jpg`), iconImg(theme)]);
 const HEART = '<svg class="cf-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5c-5.4-3.7-8.5-6.5-8.5-10a4.6 4.6 0 0 1 8.5-2.5 4.6 4.6 0 0 1 8.5 2.5c0 3.5-3.1 6.3-8.5 10z"/></svg>';
 
@@ -96,8 +97,10 @@ async function treasureScene(k) {
   // Wird das Icon 10 s nicht angetippt, öffnet sich die Karte von selbst (Reload in diesem Zustand: Uhr beginnt neu).
   let timer;
   const auto = new Promise((res) => (timer = setTimeout(() => res('auto'), AUTO_OPEN_MS)));
+  const my = session;
   let from = await Promise.race([stage.showCard(...S.pos, { icon, theme: S.theme }), auto]);
   clearTimeout(timer);
+  if (my !== session) return null;   // inzwischen zurück zum Start
   if (from === 'auto') {
     // Flug startet am Icon: Fallback hat es im DOM, AR (3D) nicht → kleiner Startpunkt in der Bildmitte
     const el = stageEl.querySelector('.fb-ticon-in');
@@ -175,43 +178,89 @@ const setStep = (st) => { state.step = st; save(); };
 const coupleAt = () => { const k = Math.min(state.station, 5) - 1; return ['back', 'open'].includes(step()) ? k : k - 1; };
 
 async function run() {
+  const my = session, gone = () => my !== session;   // nach „Zurück zum Start“ endet dieser Ablauf still
   if (state.station === 0) { state.station = 1; setStep('ready'); }
   updateHud();
   if (coupleAt() >= 0) await stage.walkTo(coupleAt(), { instant: true });
   while (!state.done) {
+    if (gone()) return;
     const k = state.station - 1, fin = k === 4;
     let from = null;
     updateHud();
     if (step() === 'ready') {
       const first = k === 0;
       await say(first ? `<p>${INTRO}</p><p class="b-ask">${READY.first}</p>` : `<p class="b-ask">${fin ? READY.last : READY.next}</p>`, first ? READY.go : READY.yes, first ? 'intro' : 'ready');
+      if (gone()) return;
       setStep('quiz');
     }
     if (step() === 'quiz' && state.solved.includes(k)) setStep('card');   // Reload kurz nach der richtigen Antwort: nicht nochmal fragen
     if (step() === 'quiz') {
       await quiz.ask(k);
+      if (gone()) return;
       stage.highlightDot && stage.highlightDot(null);
       setStep('card');
       sound.fanfare(); stage.cheer(); confetti(140);
       await sleep(1300);
+      if (gone()) return;
     }
     if (step() !== 'open' && step() !== 'back') {
       if (step() !== 'card') setStep('card');
       hidePanel();
       // Wechselt die Bühne mitten im Lauf oder während der Truhe (Kamera fällt aus / kommt zurück), auf der neuen Bühne wiederholen.
       for (let s = null; s !== stage;) { s = stage; await s.walkTo(k); }
+      if (gone()) return;
       stage.cheer();
       for (let s = null; s !== stage;) { s = stage; from = await treasureScene(k); }
+      if (gone()) return;
       setStep('back');
     }
     hidePanel();
     stage.hideCard && stage.hideCard();
     await openCard(k, from);
+    if (gone()) return;
     if (fin) { state.done = true; save(); break; }
     Object.assign(state, { station: state.station + 1, step: 'ready', wrongCount: 0, usingBackup: false, extra: null, wrong: [], gone: [] });
     save();
   }
   showEnd();
+}
+
+/* ---------- Zurück zum Start (Tipp auf den Titel im HUD) ---------- */
+// Spielstand bleibt; die Bühne wird zerstört (Kamera aus). Ein erneuter Start macht dort weiter, wo das Paar stand.
+const homeAsk = document.createElement('div');
+homeAsk.className = 'home-ask';
+homeAsk.setAttribute('role', 'dialog'); homeAsk.setAttribute('aria-labelledby', 'home-ask-t');
+homeAsk.hidden = true;
+homeAsk.innerHTML = `<p id="home-ask-t">${HOME.ask}</p><div class="home-ask-btns"><button class="btn btn-gold" data-a="yes">${HOME.yes}</button><button class="btn btn-ghost" data-a="no">${HOME.no}</button></div>`;
+$('#screen-game').append(homeAsk);
+const closeHomeAsk = () => { homeAsk.hidden = true; $('#hud-home').setAttribute('aria-expanded', 'false'); };
+$('#hud-home').onclick = () => {
+  sound.click();
+  const open = homeAsk.hidden;
+  homeAsk.hidden = !open; $('#hud-home').setAttribute('aria-expanded', String(open));
+  if (open) homeAsk.querySelector('[data-a="no"]').focus();
+};
+homeAsk.onclick = (e) => {
+  const a = e.target.closest('button') && e.target.closest('button').dataset.a;
+  if (!a) return;
+  sound.click(); closeHomeAsk();
+  if (a === 'yes') goHome();
+};
+function goHome() {
+  session++;
+  if (quiz && quiz.stop) quiz.stop();
+  quiz = null;
+  hidePanel();
+  $('#card').hidden = true; $('#card').className = 'overlay card-overlay'; $('#card').innerHTML = '';   // Schritt 'back'/'open' bleibt im Spielstand: die Karte kommt beim Weiterspielen wieder
+  $('#guide').hidden = true;
+  retryBtn.hidden = true;
+  if (stage) { stage.hideCard && stage.hideCard(); stage.destroy && stage.destroy(); stage.host && stage.host.remove(); }
+  stage = null;
+  stageEl.innerHTML = '';
+  document.body.classList.remove('mode-ar');
+  state.home = true; save();   // Reload landet ebenfalls im Startmenü
+  show('start');
+  updateTip();
 }
 
 /** „Nochmals spielen“: Fortschritt, Fragen, Joker, Karten zurück, ohne Reload zurück zum Startmenü (Mit/Ohne Kamera neu wählbar).
@@ -231,7 +280,7 @@ function playAgain() {
 
 let endTimers = [];
 function showEnd() {
-  hidePanel();
+  hidePanel(); closeHomeAsk();
   if (stage && stage.destroy) stage.destroy();
   retryBtn.hidden = true;
   $('#end-couple').innerHTML = coupleSVG();
@@ -399,7 +448,9 @@ retryBtn.onclick = async () => {
   sound.click();
   retryBtn.hidden = true;
   document.body.classList.add('mode-ar');   // vorher: MindAR misst die Bühne beim Start (Vollbild im AR-Layout)
+  const my = session;
   const ar = await tryAr();
+  if (my !== session) { if (ar) { ar.destroy && ar.destroy(); ar.host && ar.host.remove(); } return; }
   if (ar && !state.done) return useStage(ar);
   if (ar) ar.destroy();
   document.body.classList.remove('mode-ar');
@@ -410,14 +461,16 @@ async function arFatal() {
   if (!stage || !stage.isAr) return;
   toast('Die Kamera ist ausgefallen – wir spielen ohne Kamera weiter.');
   if (!$('#guide').hidden) guide.view.fail(named('ArError'));   // Anleitung noch offen: „Kamera bereit“ stimmt nicht mehr
+  const my = session;
   const fb = await fallbackStage();
-  if (state.done) { fb.destroy(); fb.host.remove(); return; }
+  if (state.done || my !== session) { fb.destroy(); fb.host.remove(); return; }
   useStage(fb);
 }
 
 async function startGame(mode, guided = false) {
+  const my = session;
   show('game');
-  state.wantAr = mode === 'ar'; save();
+  state.wantAr = mode === 'ar'; state.home = false; save();
   document.body.classList.toggle('mode-ar', mode === 'ar');
   if (guided) guide.open(mode === 'ar');   // Kamera startet darunter, die Anleitung deckt die Bühne ab
   if (guided && mode === 'ar') {   // AR-Downloads erst, wenn das Anleitungsbild steht (höchstens 2 s warten)
@@ -427,10 +480,12 @@ async function startGame(mode, guided = false) {
   let s = mode === 'ar' ? await tryAr(guided ? guide.view : overlayView) : null;
   const plain = !s;
   if (plain) s = await fallbackStage();
+  if (my !== session) { s.destroy && s.destroy(); s.host && s.host.remove(); return; }
   useStage(s);
   quiz = createQuiz({ root: panel, stage: live, sound });
   await ensureQuestions();   // 5 Fragen ziehen (oder die gespeicherten dieses Spiels behalten)
   if (guided) await guide.ready(!plain);
+  if (my !== session) return;
   run().catch((e) => { console.error(e); toast('Etwas ist schiefgelaufen – wir laden neu.'); setTimeout(() => location.reload(), 2500); });
 }
 
@@ -482,8 +537,10 @@ async function setupOffline() {
   if (!('serviceWorker' in navigator) || !window.caches) return;
   try {
     if (new URLSearchParams(location.search).get('nocache') === '1') { // Testhilfe: SW + Caches entfernen, SW diesmal nicht neu registrieren
-      await Promise.all((await navigator.serviceWorker.getRegistrations()).map((r) => r.unregister()));
-      await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+      // Nur die eigene Registrierung (gleicher Scope) und eigene Caches ('hl-…'): auf demselben Origin liegt z. B. /Lab-7x7_Kitschig/.
+      const scope = new URL('./', location.href).href;
+      await Promise.all((await navigator.serviceWorker.getRegistrations()).filter((r) => r.scope === scope).map((r) => r.unregister()));
+      await Promise.all((await caches.keys()).filter((k) => k.startsWith('hl-app-') || k.startsWith('hl-cdn-')).map((k) => caches.delete(k)));
       history.replaceState(null, '', location.pathname);
       return console.info('Offline-Cache geleert');
     }
@@ -493,16 +550,20 @@ async function setupOffline() {
     // CDN-Skripte im Hintergrund holen (no-cors wie das <script>-Tag; Antwort ist opak). Direkt in den Cache, unabhängig davon, ob der SW die Seite schon steuert.
     const cdn = await caches.open('hl-cdn-v1');
     await Promise.all(CDN_URLS.map(async (u) => { if (!(await cdn.match(u))) await cdn.put(u, await fetch(u, { mode: 'no-cors' })); }));
-    const ok = await Promise.all([...CDN_URLS, 'targets.mind', 'index.html', 'assets/target.jpg'].map((u) => caches.match(u, { ignoreSearch: true })));
-    if (ok.every(Boolean)) $('#offline-ok').hidden = false;
+    const appKey = (await caches.keys()).find((k) => k.startsWith('hl-app-'));   // nur eigene Caches prüfen (gleicher Origin wie andere Apps)
+    const app = appKey && await caches.open(appKey);
+    const ok = app && await Promise.all([...CDN_URLS.map((u) => cdn.match(u)), ...['targets.mind', 'index.html', 'assets/target.jpg'].map((u) => app.match(new URL(u, location.href).href, { ignoreSearch: true }))]);
+    if (ok && ok.every(Boolean)) $('#offline-ok').hidden = false;
   } catch (e) { console.warn('Offline-Hilfe nicht verfügbar:', e); }
 }
 
 function boot() {
   $('#start-couple').innerHTML = coupleSVG();
   if (IN_APP.test(navigator.userAgent)) $('#inapp-note').hidden = false;
-  $('#btn-ar').onclick = () => { sound.click(); startGame('ar', true); };
-  $('#btn-plain').onclick = () => { sound.click(); startGame('fallback', true); };
+  // Anleitung nur, solange noch keine Station begonnen ist (sonst geht es direkt beim gespeicherten Stand weiter)
+  const fresh = () => state.station === 0 || (state.station === 1 && step() === 'ready' && !state.solved.length);
+  $('#btn-ar').onclick = () => { sound.click(); startGame('ar', fresh()); };
+  $('#btn-plain').onclick = () => { sound.click(); startGame('fallback', fresh()); };
   document.querySelectorAll('[data-img]').forEach((el) => el.classList.toggle('has-img', hasImg(el.dataset.img)));
   document.body.classList.toggle('has-paper', hasImg('paper'));   // Papier bringt eigene Eck-Ornamente mit → CSS-Rahmen aus
   ['start', 'guide', 'end'].forEach((k) => document.body.classList.toggle('scene-' + k, hasImg('bg-' + k)));   // Szenen-Layout nur mit Bild
@@ -514,7 +575,7 @@ function boot() {
   if (isDebug()) setupDebug();
   setupOffline();
   if (state.done) return showEnd();
-  if (state.station > 0) startGame((state.wantAr ?? state.mode === 'ar') ? 'ar' : 'fallback');   // Wunsch zählt, nicht der letzte Notfall-Modus
+  if (state.station > 0 && !state.home) startGame((state.wantAr ?? state.mode === 'ar') ? 'ar' : 'fallback');   // Wunsch zählt, nicht der letzte Notfall-Modus
   else { show('start'); updateTip(); }
 }
 boot();

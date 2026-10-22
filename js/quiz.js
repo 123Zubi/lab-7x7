@@ -113,6 +113,7 @@ export function createQuiz({ root, stage, sound }) {
     sound.tension();
     say('Ist das eure endgültige Antwort?');
     await sleep(1100);
+    if (!active) return;
     b.classList.remove('locked');
     if (i === q.correct) {
       b.classList.add('right');
@@ -140,6 +141,7 @@ export function createQuiz({ root, stage, sound }) {
       stage.highlightDot && stage.highlightDot(DOTS[q.correct].color);
       say(`Die richtige Antwort war ${LETTERS[q.correct]}: ${q.options[q.correct]}. ${easier ? 'Hier kommt eine leichtere Frage!' : 'Hier kommt eine neue Frage!'}`, 'pity');
       await sleep(REVEAL_MS);
+      if (!active) return;
       stage.highlightDot && stage.highlightDot(null);
       if (active) render();
       busy = false;
@@ -162,5 +164,8 @@ export function createQuiz({ root, stage, sound }) {
 
   if (stage.onDotTap) stage.onDotTap((c) => pick(typeof c === 'number' ? c : DOTS.findIndex((d) => d.color === c)));
 
-  return { ask(i) { idx = i; active = true; busy = false; render(); return new Promise((r) => (done = r)); } };
+  return {
+    ask(i) { idx = i; active = true; busy = false; render(); return new Promise((r) => (done = r)); },
+    stop() { active = false; done = null; },   // „Zurück zum Start“: laufende Auswertung malt nichts mehr
+  };
 }

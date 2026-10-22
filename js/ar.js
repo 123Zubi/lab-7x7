@@ -234,8 +234,10 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   const EMOJI = { weihnachtsmarkt: '🎄', kino: '🍿', dinner: '🕯️', spieleabend: '🎲', flitterwochen: '🌴' };
   // Icon über der offenen Truhe: gross (2,4 Feldbreiten Durchmesser), Mitte 2 Feldbreiten über der Truhe, um 35 % des Wegs
   // zur Brettmitte versetzt (Randfelder: bleibt im Bild und steht nicht über dem Rand). Am iPhone-Bild nachjustierbar.
-  // Runde 5: 1,6 statt 2 Feldbreiten hoch (kürzerer Hebelarm: Drehfehler des Trackings bewegen das Icon weniger), Grösse gleich.
-  const ICON_R = cell * 1.2, ICON_UP = cell * 1.6, ICON_IN = 0.35, TAP_S = 1.5;
+  // Runde 5: 1,6 statt 2 Feldbreiten hoch (kürzerer Hebelarm: Drehfehler des Trackings bewegen das Icon weniger).
+  // Comic-Runde: Durchmesser 2,9 statt 2,4 Feldbreiten, 1,8 hoch (Unterkante bleibt über der Truhe); keepOnScreen hält es im Bild.
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const ICON_R = cell * 1.45, ICON_UP = cell * 1.8, ICON_IN = 0.35, TAP_S = 1.5;
   // Eigene, stärkere Glättung der Icon-Position in Weltkoordinaten (= Kamerakoordinaten, die MindAR-Kamera steht still).
   const iconFilter = makePoseSmoother(THREE, { minCF: 0.4, beta: 25, dCF: 1, ...iconSmooth });
   const vIcon = new THREE.Vector3();
@@ -248,28 +250,38 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   })());
-  const drawRing = (g, w) => {   // goldener Ring mit weichem Glanz innen und aussen (Ring bei 0,75 der halben Breite)
-    const m = w / 2, glow = g.createRadialGradient(m, m, m * 0.55, m, m, m);
-    glow.addColorStop(0, 'rgba(255,214,90,0)'); glow.addColorStop(0.45, 'rgba(255,214,90,.8)'); glow.addColorStop(1, 'rgba(255,190,40,0)');
-    g.fillStyle = glow; g.fillRect(0, 0, w, w);
-    g.beginPath(); g.arc(m, m, m * 0.75, 0, Math.PI * 2);
-    g.strokeStyle = '#f5c542'; g.lineWidth = m * 0.08; g.stroke();
-    g.strokeStyle = '#fff4c4'; g.lineWidth = m * 0.025; g.stroke();
+  const INK = '#1b1f3b', MUSTARD = '#f2b632', CORAL = '#ef6f5c', TEAL = '#2bb3a6', IVORY = '#fff8e8';
+  /** Comic-Burst hinter dem Icon: Zackenstern Senfgelb mit Koralle-Kern und schwarzer Outline (Icon deckt die Mitte bis 0,71 ab). */
+  const burst = (g, m, n, r0, r1, rot = 0) => {
+    g.beginPath();
+    for (let k = 0; k < n * 2; k++) { const a = rot + (k / (n * 2)) * Math.PI * 2, r = k % 2 ? r0 : r1; g.lineTo(m + Math.cos(a) * r, m + Math.sin(a) * r); }
+    g.closePath();
   };
-  const drawHand = (g, w) => {   // Fingerzeig (Emoji) mit dunklem Schatten, damit er auf jedem Kamerabild sichtbar ist
+  const drawRing = (g, w) => {
+    const m = w / 2;
+    g.lineJoin = 'round';
+    burst(g, m, 16, m * 0.8, m * 0.97); g.fillStyle = MUSTARD; g.fill(); g.strokeStyle = INK; g.lineWidth = m * 0.045; g.stroke();
+    burst(g, m, 16, m * 0.74, m * 0.86, Math.PI / 16); g.fillStyle = CORAL; g.fill(); g.lineWidth = m * 0.03; g.stroke();
+    g.beginPath(); g.arc(m, m, m * 0.73, 0, Math.PI * 2); g.lineWidth = m * 0.05; g.stroke();
+  };
+  const drawHand = (g, w) => {   // Fingerzeig als Comic-Sticker: Elfenbein-Kreis, schwarze Outline, harter Versatzschatten
+    const m = w / 2, r = m * 0.86, o = w * 0.05;
+    g.beginPath(); g.arc(m + o, m + o, r - o, 0, Math.PI * 2); g.fillStyle = INK; g.fill();
+    g.beginPath(); g.arc(m - o * 0.3, m - o * 0.3, r - o, 0, Math.PI * 2); g.fillStyle = IVORY; g.fill();
+    g.lineWidth = w * 0.045; g.strokeStyle = INK; g.stroke();
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.font = `${w * 0.78}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
-    g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = w * 0.08;
-    g.fillText('👆', w / 2, w / 2 + w * 0.04);
+    g.font = `${w * 0.55}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+    g.fillText('👆', m - o * 0.3, m + w * 0.02);
   };
-  const LABEL_FONT = '600 76px Jost, "Cormorant Garamond", system-ui, sans-serif';
-  const drawLabel = (g, w, h) => {   // „Antippen!“ auf dunkler Pille mit Goldrand (wie die Hinweise der App)
+  const LABEL_FONT = '400 84px Bangers, "Luckiest Guy", Impact, system-ui, sans-serif';
+  const drawLabel = (g, w, h) => {   // „Antippen!“ als Comic-Banner: Senfgelb, schwarze Outline, harter Schatten, Display-Schrift
     g.clearRect(0, 0, w, h);
-    g.beginPath(); g.roundRect(5, 5, w - 10, h - 10, (h - 10) / 2);
-    g.fillStyle = 'rgba(5,11,46,.9)'; g.fill();
-    g.strokeStyle = '#f5c542'; g.lineWidth = 6; g.stroke();
-    g.font = LABEL_FONT; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff8e7';
-    g.fillText('Antippen!', w / 2, h / 2 + 3);
+    const box = (x, y) => { g.beginPath(); g.roundRect(x, y, w - 30, h - 30, 18); };
+    box(18, 20); g.fillStyle = INK; g.fill();
+    box(8, 8); g.fillStyle = MUSTARD; g.fill(); g.strokeStyle = INK; g.lineWidth = 8; g.stroke();
+    g.font = LABEL_FONT; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineJoin = 'round'; g.lineWidth = 10; g.strokeStyle = IVORY; g.strokeText('ANTIPPEN!', w / 2 - 7, h / 2 - 4);
+    g.fillStyle = INK; g.fillText('ANTIPPEN!', w / 2 - 7, h / 2 - 4);
   };
   function labelTex() {
     const fresh = !texCache.label, tex = canvasTex('label', 512, 144, drawLabel);
@@ -279,8 +291,13 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   /** Badge-Textur: fertiges PNG (eigene Transparenz) oder gezeichneter Platzhalter mit Goldring, Elfenbein und Motiv je Thema. */
   function badgeTexture(img, theme) {
     if (img) {   // fertiger Badge (PNG mit Transparenz): unverändert, quadratisch
+      // 1024² (Zweierpotenz) → Mipmaps; trilinear + Anisotropie, damit das Icon schräg und verkleinert scharf bleibt. sRGB = farbtreu.
       const tex = new THREE.Texture(img);
       tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = true;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = sceneEl.renderer ? sceneEl.renderer.capabilities.getMaxAnisotropy() : 4;
       tex.needsUpdate = true;
       return tex;
     }
@@ -368,9 +385,9 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
       back.rotation.y = Math.PI;
       back.renderOrder = 3;
       disc.name = 'icon-front'; back.name = 'icon-back';
-      const ring = plane(ICON_R * 2.8, ICON_R * 2.8, over(canvasTex('ring', 256, 256, drawRing)), 2);   // Ring bei 1,05 × Icon-Radius
+      const ring = plane(ICON_R * 2.8, ICON_R * 2.8, over(canvasTex('ring', 512, 512, drawRing)), 2);   // Burst-Spitzen bis 1,36 × Icon-Radius
       const label = plane(ICON_R * 1.7, ICON_R * 1.7 * 144 / 512, over(labelTex()), 4);
-      const hand = plane(ICON_R * 0.8, ICON_R * 0.8, over(canvasTex('hand', 128, 128, drawHand)), 5);
+      const hand = plane(ICON_R * 0.7, ICON_R * 0.7, over(canvasTex('hand', 256, 256, drawHand)), 5);
       hand.rotation.z = 0.55;   // Finger zeigt nach links oben aufs Icon
       spin.add(disc, back);
       ig.add(ring, spin, label, hand);
@@ -396,7 +413,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   const qUp = new THREE.Quaternion(), qCam = new THREE.Quaternion(), vC = new THREE.Vector3(), vE = new THREE.Vector3();
   /** Ragt das Billboard (Ring seitlich/oben, Schriftzug unten) aus dem Bild, entlang der Bildschirmachsen hereinschieben. */
   function keepOnScreen(ig) {
-    const cam = sceneEl.camera, R = ICON_R * 1.2;   // Ring (1,05 R) plus etwas Glanz
+    const cam = sceneEl.camera, R = ICON_R * 1.3;   // Burst-Spitzen (bis 1,36 R, meist weniger)
     ig.updateMatrixWorld();
     ig.localToWorld(vC.set(0, 0, 0)).project(cam);
     ig.localToWorld(vE.set(R, 0, 0)).project(cam);
@@ -463,8 +480,9 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
         hand.position.set(ICON_R * 0.95 + d, -ICON_R * 0.6 - d, 0);
         hand.scale.setScalar(1 - 0.15 * press);
         ring.scale.setScalar(1 + 0.03 * Math.sin(time * 3) + 0.1 * press);
-        ring.material.opacity = k * (0.7 + 0.3 * press);
-        label.position.y = -ICON_R * 1.12;
+        if (!REDUCED) ring.rotation.z = time * 0.25;   // Burst dreht sich langsam (Comic-Effekt)
+        ring.material.opacity = k;
+        label.position.y = -ICON_R * 1.15;
         hand.material.opacity = label.material.opacity = smooth((t - 2.3) / 0.3);   // erst wenn das Icon steht
       }
     }
@@ -486,7 +504,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     return !!r && Math.hypot(e.clientX - r.x - r.width / 2, e.clientY - r.y - r.height / 2) <= Math.max(60, r.width * 0.8);
   }
   function showCard(r, c, { icon, theme } = {}) {
-    const u = showTreasure(r, c, { src: icon || (theme ? `assets/ui/icon-${theme}.png` : null), theme });
+    const u = showTreasure(r, c, { src: icon || (theme ? `assets/ui/icon-${theme}.webp` : null), theme });
     return new Promise((res) => { u.resolve = (v) => { u.resolve = () => {}; res(v); }; });
   }
 
@@ -669,13 +687,13 @@ const STYLE = `
 .ar-host>a-scene{position:absolute;inset:0;width:100%;height:100%}
 .ar-scan{position:absolute;inset:0;z-index:3;pointer-events:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .3s}
 .ar-scan[hidden]{display:flex;opacity:0}
-.ar-scan .ar-frame{width:min(68vw,52vh);aspect-ratio:1;border:3px dashed rgba(245,197,66,.9);border-radius:18px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);animation:ar-pulse 1.6s ease-in-out infinite}
+.ar-scan .ar-frame{width:min(68vw,52vh);aspect-ratio:1;border:4px dashed #f2b632;border-radius:18px;outline:2px solid #1b1f3b;outline-offset:2px;box-shadow:0 0 0 2000px rgba(0,0,0,.25);animation:ar-pulse 1.6s ease-in-out infinite}
 .ar-scan[hidden] .ar-frame{animation:none}
-.ar-scan .ar-msg{max-width:84%;padding:10px 16px;border-radius:14px;background:rgba(5,11,46,.88);border:1px solid #f5c542;color:#fff8e7;font:600 16px/1.35 system-ui,sans-serif;text-align:center}
+.ar-scan .ar-msg{max-width:84%;padding:10px 16px;border-radius:14px;background:#fff8e8;border:3px solid #1b1f3b;box-shadow:4px 4px 0 #1b1f3b;color:#1b1f3b;font:700 16px/1.35 Nunito,system-ui,sans-serif;text-align:center}
 .ar-scan .ar-msg small{display:block;font-weight:400;font-size:13px;opacity:.9;margin-top:4px}
 .ar-scan.lost .ar-frame{display:none}
 .ar-scan.lost{justify-content:flex-start;padding-top:calc(env(safe-area-inset-top) + 64px)}
-.ar-rot{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(5,11,46,.94);color:#fff8e7;font:600 20px/1.4 system-ui,sans-serif;text-align:center}
+.ar-rot{position:fixed;inset:0;z-index:25;display:none;align-items:center;justify-content:center;padding:24px;background:#1b1f3b;color:#fff8e8;font:700 20px/1.4 Nunito,system-ui,sans-serif;text-align:center}
 @media (orientation:landscape) and (max-height:500px){.ar-rot{display:flex}}
 @keyframes ar-pulse{50%{transform:scale(.97);opacity:.75}}
 @media (prefers-reduced-motion:reduce){.ar-scan .ar-frame{animation:none}}`;

@@ -1,9 +1,10 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-21-10';
-const APP = 'hl-app-' + VERSION;
-const CDN = 'hl-cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
+const VERSION = '2026-10-22-1';
+const PREFIX = 'hl-'; // eigener Präfix: auf demselben Origin laufen andere Apps (z. B. /Lab-7x7_Kitschig/ mit 'kitschig-…') – deren Caches nie anfassen
+const APP = PREFIX + 'app-' + VERSION;
+const CDN = PREFIX + 'cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
 const CDN_HOSTS = ['aframe.io', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com']; // Google Fonts: zur Laufzeit cache-first
 const NET_WAIT = 3500; // nur Bilder/Daten: so lange auf das Netz warten, bevor die Cache-Kopie genommen wird
 const SHELL = [
@@ -11,8 +12,8 @@ const SHELL = [
   'js/main.js', 'js/ar.js', 'js/content.js', 'js/questions.js', 'js/couple3d.js', 'js/fallback.js', 'js/quiz.js', 'js/route.js', 'js/sound.js', 'js/state.js',
   'assets/board.jpg', 'assets/target.jpg', 'targets.mind',
   // UI-Bilder und Karten (docs/ASSETS.md). Neue Datei → hier eintragen und VERSION erhöhen.
-  'assets/ui/bg-paper.jpg', 'assets/ui/divider.png', 'assets/ui/chest.png',
-  'assets/ui/icon-weihnachtsmarkt.png', 'assets/ui/icon-kino.png', 'assets/ui/icon-dinner.png', 'assets/ui/icon-spieleabend.png', 'assets/ui/icon-flitterwochen.png',
+  'assets/ui/bg-paper.jpg', 'assets/ui/divider.png', 'assets/ui/chest.webp',
+  'assets/ui/icon-weihnachtsmarkt.webp', 'assets/ui/icon-kino.webp', 'assets/ui/icon-dinner.webp', 'assets/ui/icon-spieleabend.webp', 'assets/ui/icon-flitterwochen.webp',
   'assets/ui/start.jpg', 'assets/ui/anleitung.jpg', 'assets/ui/abschluss.jpg', 'assets/ui/joker-5050.png',
   'assets/ui/paar-hallo.png', 'assets/ui/paar-denken.png', 'assets/ui/paar-jubel.png', 'assets/ui/paar-trost.png', 'assets/ui/paar-zeigen.png',
   'assets/ui/figur-steht.png', 'assets/ui/figur-laeuft-1.png', 'assets/ui/figur-laeuft-2.png', 'assets/ui/figur-jubelt.png', 'assets/ui/figur-hinten.png',
@@ -35,7 +36,7 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== APP && k !== CDN).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => (k.startsWith(PREFIX + 'app-') || k.startsWith(PREFIX + 'cdn-')) && k !== APP && k !== CDN).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', (e) => {
