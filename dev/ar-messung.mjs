@@ -32,19 +32,22 @@ async function open(zoom = 1, query = QUERY) {
     document.body.append(host);
     const { createArStage } = await import('./js/ar.js');
     window.__stage = await createArStage(host);
-    const tg = document.querySelector('#ar-target');
-    window.__raw = { found: 0, lost: 0, upd: 0 };
-    tg.addEventListener('targetFound', () => (__raw.found = performance.now()));
-    tg.addEventListener('targetLost', () => (__raw.lost = performance.now()));
-    tg.addEventListener('targetUpdate', () => __raw.upd++);
+    window.__raw = { found: 0, lost: 0, upd: 0, idx: -1 };   // zwei Ziele (ohne/mit Schmuck): Ereignisse von beiden, idx = zuerst erkanntes
+    document.querySelectorAll('.ar-tgt').forEach((tg, i) => {
+      tg.addEventListener('targetFound', () => { __raw.found = performance.now(); if (__raw.idx < 0) __raw.idx = i; });
+      // verloren erst, wenn kein Ziel mehr sichtbar ist (beim Wechsel 0↔1 meldet das alte Ziel targetLost)
+      tg.addEventListener('targetLost', () => { if (![...document.querySelectorAll('.ar-tgt')].some((e) => e !== tg && e.object3D.visible)) __raw.lost = performance.now(); });
+      tg.addEventListener('targetUpdate', () => __raw.upd++);
+    });
     return true;
   }, { SRC, NOISE, W, H, zoom }).catch((e) => 'ERR ' + e.message);
   return { page, errs, ok };
 }
 // in der Seite: Bildschirmpunkt eines Zielpunkts auf dem angezeigten Anker (neu: 'ar-anchor', alt: #ar-target)
 const HELPERS = () => {
-  const sc = document.querySelector('a-scene'), tg = document.querySelector('#ar-target'), THREE = AFRAME.THREE;
-  const A = () => sc.object3D.getObjectByName('ar-anchor') || tg.object3D;
+  const sc = document.querySelector('a-scene'), THREE = AFRAME.THREE;
+  const A = () => sc.object3D.getObjectByName('ar-anchor');
+  window.__rawM = () => A().userData.raw().matrix;   // rohe MindAR-Pose des gerade aktiven Ziels
   const v = new THREE.Vector3(), rect = sc.canvas.getBoundingClientRect();
   window.__shown = () => A().visible;
   window.__pt = (x, y, z, m) => { v.set(x, y, z).applyMatrix4(m || A().matrix).project(sc.camera); return [(v.x * 0.5 + 0.5) * rect.width, (-v.y * 0.5 + 0.5) * rect.height]; };
@@ -61,7 +64,7 @@ async function latency(roll) {
     if (!(await __waitShown(20000))) return { err: 'nicht erkannt' };
     if (ICON) { await __stage.walkTo(4, { instant: true }); __stage.showCard(4, 4, { theme: 'flitterwochen', icon: 'assets/ui/icon-flitterwochen.png' }); await new Promise((r) => setTimeout(r, 2500)); }
     await new Promise((r) => setTimeout(r, 1500));
-    const samples = [], raw = [], total = PROG.reduce((a, p) => a + p[0], 0), M = document.querySelector('#ar-target').object3D;
+    const samples = [], raw = [], total = PROG.reduce((a, p) => a + p[0], 0), M = { get matrix() { return __rawM(); } };
     const prog = (t) => { let s = 0, from = 0; for (const [d, to] of PROG) { if (t < s + d) return from + (to - from) * Math.min(1, (t - s) / d); s += d; from = to; } return from; };
     const start = performance.now(), u0 = __raw.upd; let fr = 0;
     const meas = (m) => { const [px, py] = __pt(0.4, -0.4, 0.06, m), [ox, oy] = __pt(0, 0, 0, m); return roll ? Math.atan2(py - oy, px - ox) * 1800 / Math.PI : px; };
@@ -108,7 +111,7 @@ async function rest(withIcon) {
     const B = [], R = [], I = [], start = performance.now(), u0 = __raw.upd;
     await new Promise((res) => (function f() {
       if (performance.now() - start > 6000) return res();
-      B.push(__pt(0.4, -0.4, 0.06)); R.push(__pt(0.4, -0.4, 0.06, document.querySelector('#ar-target').object3D.matrix)); const ic = __icon(); if (ic) I.push(ic);
+      B.push(__pt(0.4, -0.4, 0.06)); R.push(__pt(0.4, -0.4, 0.06, __rawM())); const ic = __icon(); if (ic) I.push(ic);
       requestAnimationFrame(f);
     })());
     return { B, R, I, hz: (__raw.upd - u0) / 6, lost: __raw.lost > 0 };
@@ -127,7 +130,7 @@ async function dist() {
     eval('(' + HELP + ')()');
     if (!(await __waitShown(20000))) return { err: 'nicht erkannt' };
     await new Promise((r) => setTimeout(r, 1000));
-    const sc = document.querySelector('a-scene'), tg = document.querySelector('#ar-target');
+    const sc = document.querySelector('a-scene'), tg = { object3D: { get matrix() { return __rawM(); } } };
     const vid = sc.systems['mindar-image-system'].video, rect = sc.canvas.getBoundingClientRect();
     const f = Math.max(rect.width / vid.videoWidth, rect.height / vid.videoHeight);   // Bildschirm-px je Video-px
     const bw = () => { const a = __pt(-0.5, 0, 0, tg.object3D.matrix), b = __pt(0.5, 0, 0, tg.object3D.matrix); return Math.hypot(a[0] - b[0], a[1] - b[1]) / f; };
@@ -141,7 +144,7 @@ async function dist() {
     }
     const hidT = performance.now(); let hidden = null;
     if (__raw.lost) { while (performance.now() - hidT < 4000) { if (!__shown()) { hidden = Math.round(performance.now() - __raw.lost); break; } await new Promise((r) => setTimeout(r, 20)); } }
-    return { video: vid.videoWidth + 'x' + vid.videoHeight, w0: Math.round(w0), lostZoom: Math.round(z * 1000) / 1000, lastBoardPx: Math.round(lastW), hz: (__raw.upd - u0) / ((performance.now() - t0) / 1000), hiddenAfterMs: hidden };
+    return { video: vid.videoWidth + 'x' + vid.videoHeight, w0: Math.round(w0), lostZoom: Math.round(z * 1000) / 1000, lastBoardPx: Math.round(lastW), hz: (__raw.upd - u0) / ((performance.now() - t0) / 1000), hiddenAfterMs: hidden, ziel: __raw.idx };
   }, { HELP: HELPERS.toString() });
   await page.close();
   console.log(JSON.stringify({ mode: 'dist', q: QUERY, W, H, ...r, errs }));
@@ -182,7 +185,7 @@ async function nah() {
   if (page) {
     const r = await page.evaluate(async ({ HELP, ZMAX }) => {
       eval('(' + HELP + ')()');
-      const sc = document.querySelector('a-scene'), tg = document.querySelector('#ar-target');
+      const sc = document.querySelector('a-scene'), tg = { object3D: { get matrix() { return __rawM(); } } };
       const vid = sc.systems['mindar-image-system'].video, rect = sc.canvas.getBoundingClientRect();
       const f = Math.max(rect.width / vid.videoWidth, rect.height / vid.videoHeight);
       const bw = () => { const a = __pt(-0.5, 0, 0, tg.object3D.matrix), b = __pt(0.5, 0, 0, tg.object3D.matrix); return Math.round(Math.hypot(a[0] - b[0], a[1] - b[1]) / f); };
@@ -196,7 +199,7 @@ async function nah() {
       }
       let held = null;
       if (__raw.lost) { const t = performance.now(); while (performance.now() - t < 8000) { if (!__shown()) { held = Math.round(performance.now() - __raw.lost); break; } await new Promise((r) => setTimeout(r, 20)); } }
-      return { brettPxStart: w0, brettPxBeiZoom1: w1, verlorenBeiZoom: __raw.lost ? Math.round(z * 100) / 100 : '>' + ZMAX, brettPxZuletzt: w, einblendungWegNachMs: held };
+      return { brettPxStart: w0, brettPxBeiZoom1: w1, verlorenBeiZoom: __raw.lost ? Math.round(z * 100) / 100 : '>' + ZMAX, brettPxZuletzt: w, einblendungWegNachMs: held, ziel: __raw.idx };
     }, { HELP: HELPERS.toString(), ZMAX: +(process.env.ZMAX || 5) });
     Object.assign(out, r); await page.close();
   }

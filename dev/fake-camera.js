@@ -27,7 +27,7 @@ export async function install(src, { width = 720, height = 1280, wobble = 0.006,
     g.rotate(Math.sin(t * 0.7) * wobble + (cv.rot || 0));
     if (cv.zoom) g.scale(cv.zoom, cv.zoom);
     if (cv.blank) { g.fillStyle = '#333'; g.fillRect(-width, -height, width * 2, height * 2); }   // __fakeCam.blank = true → Ziel verloren
-    else g.drawImage(img, (-img.width * s) / 2, (-img.height * s) / 2, img.width * s, img.height * s);
+    else { const im = cv.img || img; g.drawImage(im, (-im.width * s) / 2, (-im.height * s) / 2, im.width * s, im.height * s); }   // __fakeCam.img = anderes Bild gleicher Grösse (Zielwechsel-Test)
     if (grain) {
       g.setTransform(1, 0, 0, 1, Math.random() * 256, Math.random() * 256);
       g.globalAlpha = noise; g.fillStyle = grain[(Math.random() * grain.length) | 0]; g.fillRect(-256, -256, width + 256, height + 256); g.globalAlpha = 1;

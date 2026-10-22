@@ -1,7 +1,7 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-22-3';
+const VERSION = '2026-10-22-4';
 const PREFIX = 'hl-'; // eigener Präfix: auf demselben Origin laufen andere Apps (z. B. /Lab-7x7_Kitschig/ mit 'kitschig-…') – deren Caches nie anfassen
 const APP = PREFIX + 'app-' + VERSION;
 const CDN = PREFIX + 'cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
@@ -10,7 +10,7 @@ const NET_WAIT = 3500; // nur Bilder/Daten: so lange auf das Netz warten, bevor 
 const SHELL = [
   './', 'index.html', 'css/style.css',
   'js/main.js', 'js/ar.js', 'js/content.js', 'js/questions.js', 'js/couple3d.js', 'js/fallback.js', 'js/quiz.js', 'js/route.js', 'js/sound.js', 'js/state.js', 'js/setup.js',
-  'assets/board.jpg', 'assets/target.jpg', 'targets.mind',
+  'assets/board.jpg', 'assets/target.jpg', 'assets/target-schmuck.jpg', 'targets.mind',
   // UI-Bilder und Karten (docs/ASSETS.md). Neue Datei → hier eintragen und VERSION erhöhen.
   'assets/ui/bg-paper.jpg', 'assets/ui/divider.png', 'assets/ui/chest.webp',
   'assets/ui/icon-weihnachtsmarkt.webp', 'assets/ui/icon-kino.webp', 'assets/ui/icon-dinner.webp', 'assets/ui/icon-spieleabend.webp', 'assets/ui/icon-flitterwochen.webp',

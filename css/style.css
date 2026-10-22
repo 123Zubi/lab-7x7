@@ -163,7 +163,7 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .scene-end .prizes li { padding: 0; border: 0; }
 .scene-end .prizes .badge { width: 46px; height: 46px; }
 .scene-end .prizes .p-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.scene-end .end-title { font-size: clamp(30px, 9.4vw, 40px); white-space: nowrap; }
+.scene-end .end-title { margin-top: 8px; font-size: clamp(30px, 9.4vw, 40px); line-height: 1.15; white-space: nowrap; }   /* Bangers ragt über die Zeilenbox: sonst überlappt „Geschafft!“ */
 .scene-end .end-top .divider { display: none; }
 .scene-end .prizes-title { margin-top: 10px; }
 .scene-end .end-wish { margin-top: 8px; font-size: clamp(24px, 7.4vw, 30px); line-height: 1.1; }

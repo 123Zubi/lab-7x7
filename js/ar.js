@@ -110,10 +110,12 @@ export function makePoseSmoother(THREE, { minCF = 0.5, beta = 40, dCF = 1 } = {}
  *    256-px-Abbild (liegt schon in targets.mind), darunter der normale (weit weg ist 128 px besser: gemessen).
  *    tune.boardPx: letzte Brettbreite im Video (px) für Haltezeit und Hinweis.
  */
-const tune = { fov: 70, near: 1, near2: 1.5, boardPx: 0, short: 1, img: null };
-/** 512-px-Tracking-Abbild aus target.jpg (Grauwert wie MindARs Compiler), Punkte vom 256-px-Abbild übernommen (× 2). */
-function bigKeyframe(kf, size) {
-  const im = tune.img, f = size / kf.width, w = Math.round(kf.width * f), h = Math.round(kf.height * f);
+// imgs: Zielbilder je targetIndex (0 ohne, 1 mit Schmuck, wie in targets.mind) für den 512-px-Tracker
+const TARGET_IMGS = ['assets/target.jpg', 'assets/target-schmuck.jpg'];
+const tune = { fov: 70, near: 1, near2: 1.5, boardPx: 0, short: 1, imgs: [] };
+/** 512-px-Tracking-Abbild aus dem Zielbild (Grauwert wie MindARs Compiler), Punkte vom 256-px-Abbild übernommen (× 2). */
+function bigKeyframe(kf, size, im) {
+  const f = size / kf.width, w = Math.round(kf.width * f), h = Math.round(kf.height * f);
   const g = Object.assign(document.createElement('canvas'), { width: w, height: h }).getContext('2d', { willReadFrequently: true });
   g.drawImage(im, 0, 0, w, h);
   const px = g.getImageData(0, 0, w, h).data, data = new Uint8Array(w * h);
@@ -140,7 +142,7 @@ function patchMindar() {
     let tier = 0;
     const track0 = T.track.bind(T);
     const make = (k) => {
-      const kf = T.trackingDataList.map((d) => (k === 1 ? d[0] : bigKeyframe(d[0], 512)));
+      const kf = T.trackingDataList.map((d, i) => (k === 1 ? d[0] : bigKeyframe(d[0], 512, tune.imgs[i])));
       return new T.constructor(T.markerDimensions, kf.map((d) => [d, d]), P, W, H);
     };
     T.track = (img, mv, idx) => {
@@ -152,7 +154,7 @@ function patchMindar() {
       // Hysterese (15 %): kein Hin-und-her an einer Grenze
       while (tier < 2 && lim[tier + 1] > 0 && k > lim[tier + 1]) tier++;
       while (tier > 0 && !(lim[tier] > 0 && k > lim[tier] * 0.85)) tier--;
-      if (tier === 2 && !tune.img) tier = 1;
+      if (tier === 2 && !T.trackingDataList.every((_, i) => tune.imgs[i])) tier = 1;
       if (!tier) return track0(img, mv, idx);
       tiers[tier] ||= make(tier);
       return tiers[tier].track(img, mv, idx);
@@ -806,13 +808,13 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   onPhase('loading');
   // Erst alles laden, was ohne Kamera geht. Danach genau EIN getUserMedia, dessen Stream MindAR direkt übernimmt
   // (kein zweiter Kamera-Dialog auf iOS, keine Lücke, echte Fehlernamen statt MindARs „VIDEO_FAIL“).
-  const [aspect] = await Promise.all([
-    new Promise((res) => {
+  const [[aspect]] = await Promise.all([
+    Promise.all(TARGET_IMGS.map((src, k) => new Promise((res) => {   // beide Ziele sind gleich gross (1000×1000, gleiche tileArea)
       const i = new Image();
-      i.onload = () => { tune.img = i; res(i.naturalHeight / i.naturalWidth || 1); };
+      i.onload = () => { tune.imgs[k] = i; res(i.naturalHeight / i.naturalWidth || 1); };
       i.onerror = () => res(1);
-      i.src = 'assets/target.jpg';
-    }),
+      i.src = src;
+    }))),
     (async () => {
       if (!window.AFRAME) await loadScript(AFRAME_SRC);
       if (!window.AFRAME.components['mindar-image']) await loadScript(MINDAR_SRC);
@@ -838,12 +840,14 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   renderer="antialias: true; alpha: true"
   mindar-image="imageTargetSrc: ${targetSrc}; maxTrack: 1; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: ${minCF}; filterBeta: ${beta}; missTolerance: ${MISS}; warmupTolerance: ${WARM}">
   <a-camera position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
-  <a-entity id="ar-target" mindar-image-target="targetIndex: 0"></a-entity>
+  <a-entity id="ar-target" class="ar-tgt" mindar-image-target="targetIndex: 0"></a-entity>
+  <a-entity id="ar-target-schmuck" class="ar-tgt" mindar-image-target="targetIndex: 1"></a-entity>
 </a-scene>
 <div class="ar-scan" role="status" aria-live="polite"><div class="ar-frame"></div>
   <p class="ar-msg">Haltet die Kamera ruhig auf das Spielbrett<small>Am besten von oben, bei gutem Licht</small></p></div>`);
   const sceneEl = container.querySelector('a-scene');
-  const targetEl = container.querySelector('#ar-target');
+  // Zwei Ziele, ein Brett: 0 = ohne Schmuck, 1 = mit Schmuck (docs/AR.md „Schmuck“). maxTrack 1 → MindAR verfolgt immer nur eines.
+  const targetEls = [...container.querySelectorAll('.ar-tgt')];
   const scan = container.querySelector('.ar-scan');
   const msg = scan.querySelector('.ar-msg');
   const rot = Object.assign(document.createElement('div'), { className: 'ar-rot', textContent: '📱 Bitte im Hochformat spielen' });
@@ -890,20 +894,40 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   let poseT = 0, lostAt = 0;
   const setFade = (o) => { if (sceneEl.canvas) sceneEl.canvas.style.opacity = o >= 1 ? '' : String(o); };
   const hideNow = () => { lostAt = 0; anchor.visible = false; tracking = false; setFade(1); };
-  const targetComp = () => targetEl.components['mindar-image-target'];
+  const targetComp = (i) => targetEls[i].components['mindar-image-target'];
+  // Der Anker folgt dem Ziel `active`. Beide Posen beschreiben dasselbe Brett (gleiche Grösse, gleiche tileArea), deshalb
+  // läuft die Glättung beim Wechsel einfach weiter: kein Sprung, kein Neustart der Figuren.
+  // Wechsel nur, wenn MindAR das aktive Ziel gerade nicht verfolgt: Während missTolerance schickt MindAR für das alte Ziel
+  // weiter seine letzte (stehende) Pose, die darf die frische Pose des anderen nicht überschreiben.
+  let active = 0;
+  const isTracked = (i) => { const st = sys().controller && sys().controller.trackingStates; return !!(st && st[i] && st[i].isTracking); };
+  anchor.userData.raw = () => targetEls[active].object3D;   // rohe MindAR-Pose des aktiven Ziels (Messskript)
+  anchor.userData.active = () => active;
   const hookTarget = () => {   // nach 'loaded' der Szene (vorher gibt es die Komponente evtl. noch nicht), vor MindARs Start
-    const tc = targetComp(), upd0 = tc && tc.updateWorldMatrix;
-    if (!upd0) return;
-    tc.updateWorldMatrix = function (wm) {
-      upd0.call(this, wm);
-      const now = performance.now();
-      if (!wm) { if (anchor.visible && !lostAt) { lostAt = now; nearLoss = tune.boardPx / tune.short >= NFAR; } return; }
-      if (!anchor.visible) smoother.reset();
-      smoother.filterMatrix(targetEl.object3D.matrix, (now - poseT) / 1000, anchor.matrix);
-      anchor.matrixWorldNeedsUpdate = true;
-      poseT = now;
-      if (lostAt || !anchor.visible) { lostAt = 0; setFade(1); anchor.visible = tracking = true; scan.hidden = true; }
-    };
+    targetEls.forEach((el, i) => {
+      const tc = targetComp(i), upd0 = tc && tc.updateWorldMatrix;
+      if (!upd0) return;
+      tc.updateWorldMatrix = function (wm) {
+        upd0.call(this, wm);
+        const now = performance.now();
+        if (!wm) {
+          if (i !== active) return;
+          const other = targetEls.findIndex((e, k) => k !== i && e.object3D.visible);
+          if (other >= 0) { active = other; return; }   // das andere Ziel zeigt schon: dort weiter
+          if (anchor.visible && !lostAt) { lostAt = now; nearLoss = tune.boardPx / tune.short >= NFAR; }
+          return;
+        }
+        if (i !== active) {
+          if (anchor.visible && !lostAt && isTracked(active)) return;   // aktives Ziel läuft noch: anderes ignorieren
+          active = i;
+        }
+        if (!anchor.visible) smoother.reset();
+        smoother.filterMatrix(el.object3D.matrix, (now - poseT) / 1000, anchor.matrix);
+        anchor.matrixWorldNeedsUpdate = true;
+        poseT = now;
+        if (lostAt || !anchor.visible) { lostAt = 0; setFade(1); anchor.visible = tracking = true; scan.hidden = true; }
+      };
+    });
   };
   (function holdTick() {
     if (destroyed) return;
@@ -959,7 +983,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   async function restartCam() {
     if (destroyed || restarting || !live || document.hidden) return;
     restarting = true;
-    if (targetEl.object3D.visible && targetComp()) targetComp().updateWorldMatrix(null);
+    targetEls.forEach((el, i) => { if (el.object3D.visible && targetComp(i)) targetComp(i).updateWorldMatrix(null); });
     hideNow();   // altes Bild nicht stehen lassen (keine Haltezeit beim Neustart)
     nearLoss = false;
     scan.classList.remove('lost');
@@ -1066,13 +1090,13 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
     hud.style.cssText = 'position:absolute;left:6px;bottom:6px;z-index:4;pointer-events:none;padding:3px 6px;border-radius:6px;background:rgba(0,0,0,.55);color:#fff;font:11px/1.3 ui-monospace,monospace';
     container.append(hud);
     let nUpd = 0, nFr = 0, t = performance.now();
-    targetEl.addEventListener('targetUpdate', () => nUpd++);
+    targetEls.forEach((el) => el.addEventListener('targetUpdate', () => nUpd++));
     (function count(now) {
       if (destroyed) return;
       nFr++;
       if (now - t > 1000) {
         const v = sys().video, k = 1000 / (now - t);
-        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · smooth ${sm.minCF}/${sm.beta} · hold ${HOLD} · mincf ${minCF}`;
+        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · smooth ${sm.minCF}/${sm.beta} · hold ${HOLD} · mincf ${minCF} · Ziel ${active ? 'Schmuck' : 'ohne'}`;
         nUpd = nFr = 0; t = now;
       }
       requestAnimationFrame(count);
