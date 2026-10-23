@@ -81,6 +81,7 @@
   <section id="guide" class="guide" hidden aria-labelledby="guide-title">
     <div class="guide-scroll">
       <div class="guide-inner">
+        <div class="g-pose art art-pose-hallo" id="g-pose" data-img="pose-hallo" aria-hidden="true"></div>
         <p class="kicker" id="g-kicker"></p>
         <h2 class="guide-title" id="guide-title"></h2>
         <p class="guide-intro" id="g-intro"></p>
@@ -90,6 +91,7 @@
         <h3 class="guide-h" id="g-tips-title"></h3>
         <ul class="guide-tips" id="g-tips"></ul>
         <p class="guide-warn" id="g-warn"></p>
+        <p class="guide-warn g-tip" id="g-tip" aria-live="off"></p>
       </div>
     </div>
     <div class="guide-foot">
@@ -130,10 +132,6 @@
     </div>
   </section>
 
-  <div id="loading" class="overlay" hidden>
-    <div class="modal-card"><div class="spinner" aria-hidden="true"></div><p id="loading-text">Kamera wird gestartet …</p>
-      <button id="btn-cancel-ar" class="btn btn-ghost">Lieber ohne Kamera</button></div>
-  </div>
   <div id="card" class="overlay card-overlay" hidden></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <canvas id="confetti" aria-hidden="true"></canvas>

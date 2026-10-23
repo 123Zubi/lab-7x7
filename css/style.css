@@ -228,6 +228,21 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .guide-status[data-kind="off"] { color: var(--coral-ink); }
 .guide #btn-go:not(:disabled) { animation: ready-pop .5s var(--ease) 1; }
 @keyframes ready-pop { 0% { transform: scale(.95); } 60% { transform: scale(1.03); } }
+/* Ladescreen beim Wiedereinstieg mit Kamera (.guide.resume, main.js guide.open(…, true)): Paar, Station, wechselnde Tipps, mittig */
+.guide:not(.resume) .g-pose, .guide:not(.resume) .g-tip { display: none; }
+.resume #g-steps-title, .resume #g-steps, .resume #g-tips, .resume #g-warn, .resume .guide-inner::before { display: none; }
+.resume .guide-scroll { display: flex; flex-direction: column; }
+body .resume .guide-inner { margin: auto; padding-top: 22px; width: 100%; text-align: center; }
+.resume .guide-title { margin-top: 4px; }
+.resume .guide-h { margin: 18px auto 10px; }
+.g-pose {
+  width: min(46vw, 210px, 30dvh); aspect-ratio: 1; margin: 0 auto 14px; border-radius: 50%; border: var(--ol); box-shadow: var(--sh);
+  background: var(--art) 50% 10px / auto 150% no-repeat, var(--dots), var(--teal-pale);
+}
+.g-pose.art-pose-jubel { background-color: var(--mustard-hi); animation: ready-pop .5s var(--ease) 1; }
+.g-tip { min-height: 4.4em; margin: 0 auto; max-width: 400px; text-align: left; background: var(--mustard-hi); }
+.g-tip.in { animation: tip-in .45s var(--ease) both; }
+@keyframes tip-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ---- Abschluss ---- */
 .end-title { margin: 4px 0 0; font: 400 clamp(32px, 10vw, 40px)/1.05 var(--display); letter-spacing: .02em; color: var(--ink); text-shadow: 3px 3px 0 var(--mustard); text-wrap: balance; }
@@ -480,16 +495,6 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 
 /* ---- Overlays ---- */
 .overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: rgba(27, 31, 59, .6); animation: fadein .25s; }
-.modal-card {
-  width: 100%; max-width: 360px; padding: 24px 22px 22px; text-align: center; border-radius: 10px;
-  background: var(--dots), var(--ivory); color: var(--ink); border: var(--ol); box-shadow: 6px 6px 0 var(--ink);
-  animation: pop .3s var(--ease) both;
-}
-.modal-card h3 { margin: 0 0 8px; font: 400 30px/1.1 var(--display); letter-spacing: .03em; color: var(--ink); }
-.modal-card p { margin: 0 0 14px; color: var(--ink); font-weight: 700; }
-.timer { margin: 4px 0 16px; font: 400 56px/1 var(--display); color: var(--coral); text-shadow: 2px 2px 0 var(--ink); font-variant-numeric: tabular-nums; }
-.spinner { width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 50%; border: 4px solid var(--ink); border-top-color: var(--mustard); border-right-color: var(--coral); animation: spin .9s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 #confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 40; }
 
 /* ---- AR-Hinweise aus ar.js (dort schon Comic-Grundstil; hier an die App-Schriften angeglichen) ---- */
@@ -572,7 +577,7 @@ body > .ar-rot { background: var(--dots), var(--ivory); color: var(--ink); font:
 
 @supports not (height: 1dvh) { .cf-stage { --cw: min(86vw, 400px, calc((100vh - 190px) * 2 / 3)); } }   /* iOS < 15.4: Fallback per @supports */
 @keyframes cf-fade { from { opacity: 0; } }
-.timer, .cf-kicker { font-variant-numeric: lining-nums tabular-nums; }
+.cf-kicker { font-variant-numeric: lining-nums tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
   .card-overlay .cf-flip { animation: cf-fade .45s ease both !important; }   /* Flug und Flip als Überblendung */
@@ -699,6 +704,7 @@ body .setup .guide-inner { padding-top: 22px; }
   .guide-steps li { font-size: 18px; padding-left: 46px; }
   .guide-tips li, .guide-warn { font-size: 17.5px; }
   .guide-foot .btn, .guide-status { max-width: 460px; }
+  .g-pose { width: min(260px, 30dvh); } .g-tip { max-width: 460px; }
   .end-title { font-size: 46px; }
   .scene-end .end-title { font-size: 46px; }
   .scene-end .end-wish { font-size: 34px; }
@@ -720,7 +726,6 @@ body .setup .guide-inner { padding-top: 22px; }
   .cf-stage { --cw: min(70vw, 420px, calc((100dvh - 220px) * 2 / 3)); }
   .cf-body { font-size: 16px; }
   .cf-ribbon { font-size: 16.5px; }
-  .modal-card { max-width: 420px; }
   .toast { width: min(560px, calc(100% - 28px)); margin-inline: auto; }
 }
 /* Querformat (Tablets ab 900 px Breite): zwei Spalten. Links Kamerabild bzw. Brett gross, rechts die Seitenleiste

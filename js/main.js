@@ -1,7 +1,7 @@
 // Ablaufsteuerung: Start → Anleitung → (AR | Fallback) → je Station: bereit? → Frage → Paar läuft zum Feld → Karte schwebt → Vollbild-Karte
 // → nach Karte 4: letzte Frage (5) → Podest → Flitterwochen-Karte → Abschluss. (Neuer Ablauf, docs/ARCHITEKTUR.md 2026-10-21; keine Geldbeträge.)
 import { state, save, reset, isDebug } from './state.js';
-import { STATIONS, FINALE, INTRO, GUIDE, END, READY, CARDS, CARD_UI, POSES, HOME } from './content.js';
+import { STATIONS, FINALE, INTRO, GUIDE, RESUME, END, READY, CARDS, CARD_UI, POSES, HOME } from './content.js';
 import { sound, isMuted, toggleMute } from './sound.js';
 import { createQuiz, ensureQuestions } from './quiz.js';
 import { createFallbackStage, coupleSVG, stationBadge, hasImg, art } from './fallback.js';
@@ -12,9 +12,9 @@ const IN_APP = /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|MicroMessenger|Snapch
 const stageEl = $('#stage');
 // Anleitungsbild schon beim Laden der Seite holen und dekodieren: Sonst lädt der Browser es erst, wenn die Anleitung erscheint,
 // und dann im Wettlauf mit A-Frame/MindAR/targets.mind (mehrere MB) – auf dem iPhone kam es erst, wenn die Kamera lief.
-const guideImg = new Image();
-guideImg.src = 'assets/ui/anleitung.jpg';
-const guideImgReady = guideImg.decode().catch(() => {});
+const preload = (src) => { const i = new Image(); i.src = src; return i.decode().catch(() => {}); };
+const guideImgReady = preload('assets/ui/anleitung.jpg');
+const poseImgReady = preload('assets/ui/paar-hallo.png');   // Ladescreen beim Wiedereinstieg
 const panel = $('#panel');
 let stage = null;
 let quiz = null;
@@ -274,7 +274,7 @@ function goHome() {
   quiz = null;
   hidePanel();
   $('#card').hidden = true; $('#card').className = 'overlay card-overlay'; $('#card').innerHTML = '';   // Schritt 'back'/'open' bleibt im Spielstand: die Karte kommt beim Weiterspielen wieder
-  $('#guide').hidden = true;
+  guide.close();
   retryBtn.hidden = true;
   if (stage) { stage.hideCard && stage.hideCard(); stage.destroy && stage.destroy(); stage.host && stage.host.remove(); }
   stage = null;
@@ -334,35 +334,58 @@ const AR_MSG = {
 };
 const arMsg = (e) => AR_MSG[e && e.name] || 'Die Kamera ist gerade nicht verfügbar – wir spielen ohne Kamera weiter.';
 
-// Fortschrittsanzeige für den Kamerastart: das Lade-Overlay (Reload, „Kamera nochmal versuchen“) oder der Anleitungs-Screen.
-const overlayView = {
-  btn: $('#btn-cancel-ar'),
-  text: (t) => ($('#loading-text').textContent = t),
-  phase() {},
-  open() { this.btn.className = 'btn btn-ghost'; $('#loading').hidden = false; },
-  slow() { this.btn.className = 'btn btn-gold'; },
-  close() { this.btn.className = 'btn btn-ghost'; this.text('Kamera wird gestartet …'); $('#loading').hidden = true; },
-  fail(e) { if (e.name !== 'Cancelled') toast(arMsg(e)); },
-};
+/* ---------- Spielbrett-Erkennung (targets.mind, 6 MB) ---------- */
+// Genau ein Download pro Seitenaufruf: das Vorladen auf dem Startscreen und der Kamerastart teilen ihn sich.
+// Ergebnis ist eine Blob-URL, die ar.js an MindAR gibt (kein zweiter Abruf, auch nicht beim Kamera-Neustart).
+// Scheitert es, kommt 'targets.mind' zurück: ar.js lädt dann selbst und meldet ggf. TargetError.
+let targetsP = null, targetsDone = false, targetsPct = null;
+function loadTargets() {
+  if (!targetsP) targetsP = (async () => {
+    const r = await fetch('targets.mind');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.body) return URL.createObjectURL(await r.blob());
+    const total = r.headers.get('content-encoding') ? 0 : +r.headers.get('content-length') || 0;
+    const rd = r.body.getReader(), parts = [];
+    for (let n = 0; ;) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      parts.push(value); n += value.length;
+      if (total && targetsPct) targetsPct(Math.min(1, n / total));
+    }
+    targetsDone = true;
+    return URL.createObjectURL(new Blob(parts));
+  })().catch((e) => { console.warn('targets.mind nicht vorgeladen:', e); targetsP = null; return 'targets.mind'; });
+  return targetsP;
+}
 
-async function tryAr(view = overlayView) {
+async function tryAr(view) {
   // 45 s Zeitbudget – die Zeit im Kamera-Dialog zählt nicht: ar.js meldet Phasen, bei 'permission' steht die Uhr,
   // nach erteilter Erlaubnis ('starting') beginnt sie neu.
   const AR_TIMEOUT = 45000, SHOW_CANCEL = 8000;
   const PHASE = { loading: GUIDE.status.loading, permission: GUIDE.status.permission, starting: GUIDE.status.starting };
   const STEPS = [[12000, 'Das dauert länger als sonst …'], [30000, 'Fast fertig …']];
   const text = (t) => view.text(t);
-  let cancel, timeUp, timers = [], lost = false;
+  let cancel, timeUp, timers = [], lost = false, cur = 'loading', pct = -1;
   const cancelled = new Promise((_, rej) => (cancel = () => rej(named('Cancelled', 'abgebrochen'))));
   const timeout = new Promise((_, rej) => (timeUp = () => rej(named('Timeout', 'Zeitüberschreitung'))));
   const disarm = () => { timers.forEach(clearTimeout); timers = []; };
   const arm = () => { disarm(); timers = [setTimeout(timeUp, AR_TIMEOUT), ...STEPS.map(([ms, t]) => setTimeout(() => text(t), ms))]; };
   const onPhase = (p) => {
     if (lost || !PHASE[p]) return;
+    cur = p;
     text(PHASE[p]); view.phase(p);
     if (p === 'permission') disarm(); else arm();
   };
   text(PHASE.loading); view.phase('loading');
+  // Download-Fortschritt in Prozent. Solange Daten fliessen, beginnt die Uhr neu: bei langsamem Netz zählt nur ein Stillstand.
+  if (!targetsDone) targetsPct = (f) => {
+    const p = Math.round(f * 100);
+    if (lost || cur !== 'loading' || p === pct) return;
+    pct = p;
+    text(p < 100 ? GUIDE.status.percent.replace('{p}', p) : PHASE.loading);
+    view.progress(f);
+    arm();
+  };
   view.open();
   view.btn.onclick = () => { sound.click(); cancel(); };
   const slow = setTimeout(() => view.slow(), SHOW_CANCEL);
@@ -371,7 +394,7 @@ async function tryAr(view = overlayView) {
   const host = document.createElement('div');
   host.style.cssText = 'position:absolute;inset:0';
   stageEl.append(host);
-  const ar = import('./ar.js').then((m) => m.createArStage(host, { onPhase, onFatal: arFatal }));
+  const ar = import('./ar.js').then((m) => m.createArStage(host, { onPhase, onFatal: arFatal, targets: loadTargets() }));
   ar.then((s) => { if (lost) s.destroy && s.destroy(); }, () => {}); // kam sie doch noch: Kamera aus, Szene weg
   try {
     const s = await Promise.race([ar, cancelled, timeout]);
@@ -385,14 +408,18 @@ async function tryAr(view = overlayView) {
     return null;
   } finally {
     clearTimeout(slow); disarm();
+    targetsPct = null;
     view.close();
   }
 }
 
-/* ---------- Anleitungs-Screen ---------- */
+/* ---------- Anleitungs-Screen / Ladescreen ---------- */
+// Erststart: Anleitung. Wiedereinstieg mit Kamera (Spielstand, Reload, „Kamera nochmal versuchen“): kurzer Ladescreen
+// (Klasse .resume) mit Paar, Station und wechselnden Tipps. Beide zeigen denselben Fortschritt, die Kamera startet darunter.
 const guide = (() => {
-  const root = $('#guide'), st = $('#guide-status'), go = $('#btn-go'), cancelBtn = $('#guide-cancel');
+  const root = $('#guide'), st = $('#guide-status'), go = $('#btn-go'), cancelBtn = $('#guide-cancel'), tip = $('#g-tip'), pose = $('#g-pose');
   const STEP = { loading: 1, permission: 2, starting: 3, ready: 4 };
+  let resume = false, cancelled = false, tipT = 0;
   const setStatus = (t, kind = 'busy', step = 0) => {
     st.querySelector('.g-text').textContent = t;
     st.dataset.kind = kind;
@@ -402,34 +429,46 @@ const guide = (() => {
     btn: cancelBtn,
     text: (t) => setStatus(t, 'busy', +st.style.getPropertyValue('--step') || 1),
     phase: (p) => st.style.setProperty('--step', STEP[p] || 1),
+    progress: (f) => st.style.setProperty('--step', 0.15 + 0.85 * f),   // Download füllt den ersten Abschnitt
     open() { cancelBtn.hidden = false; },
     slow() {},
     close() { cancelBtn.hidden = true; },
-    fail(e) { setStatus(e.name === 'Cancelled' ? GUIDE.status.cancelled : arMsg(e), 'off'); },
+    fail(e) { cancelled = e.name === 'Cancelled'; setStatus(cancelled ? GUIDE.status.cancelled : arMsg(e), 'off'); },
   };
+  const close = () => { clearInterval(tipT); root.hidden = true; };
+  const nextTip = (i) => { tip.textContent = RESUME.tips[i % RESUME.tips.length]; tip.classList.remove('in'); void tip.offsetWidth; tip.classList.add('in'); };
   return {
     view,
-    open(withCam) {
-      $('#g-kicker').textContent = GUIDE.kicker;
-      $('#guide-title').textContent = GUIDE.title;
-      $('#g-intro').textContent = GUIDE.intro;
+    close,
+    /** again = Wiedereinstieg (Ladescreen statt Anleitung). */
+    open(withCam, again = false) {
+      resume = again; cancelled = false;
+      const T = again ? RESUME : GUIDE;
+      root.classList.toggle('resume', again);
+      $('#g-kicker').textContent = again ? RESUME.kicker.replace('{n}', Math.min(5, Math.max(1, state.station))) : GUIDE.kicker;
+      $('#guide-title').textContent = T.title;
+      $('#g-intro').textContent = T.intro;
       $('#g-steps-title').textContent = GUIDE.stepsTitle;
       $('#g-steps').innerHTML = GUIDE.steps.map((t) => `<li>${t}</li>`).join('');
-      $('#g-tips-title').textContent = GUIDE.tipsTitle;
+      $('#g-tips-title').textContent = T.tipsTitle;
       $('#g-tips').innerHTML = GUIDE.tips.filter((t) => withCam || !t.ar).map((t) => `<li>${t.text}</li>`).join('');
       $('#g-warn').textContent = GUIDE.warn;
-      cancelBtn.textContent = GUIDE.cancel;
-      go.textContent = GUIDE.go;
+      pose.className = 'g-pose art art-pose-hallo';
+      clearInterval(tipT);
+      if (again) { let i = 0; nextTip(i); tipT = setInterval(() => nextTip(++i), 5000); }
+      cancelBtn.textContent = T.cancel;
+      go.textContent = T.go;
       go.disabled = true;   // ready() gibt frei, sobald die Bühne steht – auch ohne Kamera (sonst verpufft der erste Tipp)
       if (withCam) setStatus(GUIDE.status.loading, 'busy', 1); else setStatus(GUIDE.status.plain, 'plain');
       root.hidden = false;
       root.querySelector('.guide-scroll').scrollTop = 0;
     },
-    /** Bühne steht (AR bereit oder Fallback): Button frei, wartet auf „Los geht’s“. */
+    /** Bühne steht (AR bereit oder Fallback): Button frei, wartet auf „Los geht’s“ bzw. „Weiter spielen“. */
     ready(isAr) {
-      if (isAr) setStatus(GUIDE.status.ready, 'ready', 4);
+      if (isAr) { setStatus(GUIDE.status.ready, 'ready', 4); pose.className = 'g-pose art art-pose-jubel'; }
       go.disabled = false;
-      return new Promise((res) => (go.onclick = () => { sound.click(); go.onclick = null; fullscreen(); root.hidden = true; res(); }));
+      if (resume && cancelled) { close(); return Promise.resolve(); }   // „Lieber ohne Kamera“ beim Wiedereinstieg: direkt weiter
+      return new Promise((res) => (go.onclick = () => { sound.click(); go.onclick = null; fullscreen(); close(); res(); }));
     },
   };
 })();
@@ -471,12 +510,17 @@ retryBtn.onclick = async () => {
   retryBtn.hidden = true;
   document.body.classList.add('mode-ar');   // vorher: MindAR misst die Bühne beim Start (Vollbild im AR-Layout)
   const my = session;
-  const ar = await tryAr();
+  guide.open(true, true);
+  const ar = await tryAr(guide.view);
   if (my !== session) { if (ar) { ar.destroy && ar.destroy(); ar.host && ar.host.remove(); } return; }
-  if (ar && !state.done) return useStage(ar);
-  if (ar) ar.destroy();
-  document.body.classList.remove('mode-ar');
-  updateRetry();
+  const ok = ar && !state.done;
+  if (ok) useStage(ar);
+  else {
+    if (ar) ar.destroy();
+    document.body.classList.remove('mode-ar');
+    updateRetry();
+  }
+  if (state.done) guide.close(); else await guide.ready(!!ok);
 };
 
 async function arFatal() {
@@ -489,17 +533,18 @@ async function arFatal() {
   useStage(fb);
 }
 
-async function startGame(mode, guided = false) {
-  const my = session;
+/** fresh = noch keine Station begonnen → Anleitung. Sonst mit Kamera der Ladescreen (Wiedereinstieg), ohne Kamera direkt weiter. */
+async function startGame(mode, fresh = false) {
+  const my = session, guided = fresh || mode === 'ar';
   show('game');
   state.wantAr = mode === 'ar'; state.home = false; save();
   document.body.classList.toggle('mode-ar', mode === 'ar');
-  if (guided) guide.open(mode === 'ar');   // Kamera startet darunter, die Anleitung deckt die Bühne ab
-  if (guided && mode === 'ar') {   // AR-Downloads erst, wenn das Anleitungsbild steht (höchstens 2 s warten)
-    await Promise.race([guideImgReady, sleep(2000)]);
+  if (guided) guide.open(mode === 'ar', !fresh);   // Kamera startet darunter, Anleitung bzw. Ladescreen deckt die Bühne ab
+  if (mode === 'ar') {   // AR-Downloads erst, wenn das Bild oben steht (höchstens 2 s warten)
+    await Promise.race([fresh ? guideImgReady : poseImgReady, sleep(2000)]);
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   }
-  let s = mode === 'ar' ? await tryAr(guided ? guide.view : overlayView) : null;
+  let s = mode === 'ar' ? await tryAr(guide.view) : null;
   const plain = !s;
   if (plain) s = await fallbackStage();
   if (my !== session) { s.destroy && s.destroy(); s.host && s.host.remove(); return; }
@@ -556,17 +601,22 @@ $('#a2hs-close').onclick = () => {
 // Dieselben URLs wie in ar.js (AFRAME_SRC/MINDAR_SRC) – bei Versionswechsel dort hier mitziehen.
 const CDN_URLS = ['https://aframe.io/releases/1.5.0/aframe.min.js', 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js'];
 async function setupOffline() {
-  if (!('serviceWorker' in navigator) || !window.caches) return;
+  const sw = 'serviceWorker' in navigator && !!window.caches;
+  if (sw && new URLSearchParams(location.search).get('nocache') === '1') try { // Testhilfe: SW + Caches entfernen, SW diesmal nicht neu registrieren
+    // Nur die eigene Registrierung (gleicher Scope) und eigene Caches ('hl-…'): auf demselben Origin liegt z. B. /Lab-7x7_Kitschig/.
+    const scope = new URL('./', location.href).href;
+    await Promise.all((await navigator.serviceWorker.getRegistrations()).filter((r) => r.scope === scope).map((r) => r.unregister()));
+    await Promise.all((await caches.keys()).filter((k) => k.startsWith('hl-app-') || k.startsWith('hl-cdn-')).map((k) => caches.delete(k)));
+    history.replaceState(null, '', location.pathname);
+    return console.info('Offline-Cache geleert');
+  } catch (e) { return console.warn('Offline-Cache nicht geleert:', e); }
+  // Erst die UI-Bilder, dann die Spielbrett-Erkennung vorladen (6 MB): „Mit Kamera“ findet sie meist schon fertig vor.
+  // Danach erst der SW: seine Installation prüft targets.mind dann nur noch nach (304) statt sie ein zweites Mal zu laden.
+  await guideImgReady;
+  if (document.readyState !== 'complete') await new Promise((r) => addEventListener('load', r, { once: true }));
+  await loadTargets();
+  if (!sw) return;
   try {
-    if (new URLSearchParams(location.search).get('nocache') === '1') { // Testhilfe: SW + Caches entfernen, SW diesmal nicht neu registrieren
-      // Nur die eigene Registrierung (gleicher Scope) und eigene Caches ('hl-…'): auf demselben Origin liegt z. B. /Lab-7x7_Kitschig/.
-      const scope = new URL('./', location.href).href;
-      await Promise.all((await navigator.serviceWorker.getRegistrations()).filter((r) => r.scope === scope).map((r) => r.unregister()));
-      await Promise.all((await caches.keys()).filter((k) => k.startsWith('hl-app-') || k.startsWith('hl-cdn-')).map((k) => caches.delete(k)));
-      history.replaceState(null, '', location.pathname);
-      return console.info('Offline-Cache geleert');
-    }
-    await guideImgReady;   // SW-Installation (ganze SHELL) und CDN-Vorabladen (mehrere MB) erst nach dem Anleitungsbild
     await navigator.serviceWorker.register('sw.js', { scope: './' });
     await navigator.serviceWorker.ready;
     // CDN-Skripte im Hintergrund holen (no-cors wie das <script>-Tag; Antwort ist opak). Direkt in den Cache, unabhängig davon, ob der SW die Seite schon steuert.

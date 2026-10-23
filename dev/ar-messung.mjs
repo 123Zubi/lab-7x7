@@ -11,13 +11,13 @@ const [MODE, QUERY = ''] = process.argv.slice(2);
 const W = +(process.env.W || 720), H = +(process.env.H || 1280), PHOTO = process.env.PHOTO || 'IMG_6831';
 const NOISE = +(process.env.NOISE ?? 0.15), PORT = process.env.PORT || 8105;
 const VW = +(process.env.VW || 390), VH = +(process.env.VH || 844), WOBBLE = +(process.env.WOBBLE || 0);
-const SRC = PHOTO.includes('/') ? PHOTO : `../Fotos/${PHOTO}.jpeg`;
+const SRC0 = PHOTO.includes('/') ? PHOTO : `../Fotos/${PHOTO}.jpeg`, SRC = SRC0;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const std = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - m) ** 2))); };
 const r2 = (x) => Math.round(x * 100) / 100;
 
-async function open(zoom = 1, query = QUERY) {
+async function open(zoom = 1, query = QUERY, SRC = SRC0) {
   const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: +(process.env.DSF || 2) });
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
@@ -302,6 +302,92 @@ async function perf() {
   console.log(JSON.stringify({ mode: 'perf', q: QUERY, ...r, errs }));
 }
 if (MODE === 'perf') await perf();
+// Fehlposen (docs/AR.md „Fehlposen“): je Foto mit Soll-Lage (GT = JSON {foto: {H, inl}}, H: Brett-Zielkoordinaten → Foto 0..1,
+// per SIFT+RANSAC gegen das Schmuck-Zielbild), Foto wie aufgenommen, langsamer Seitenschwenk ±SWING × Videobreite (Periode 6 s),
+// SECS s lang. Je Frame mit Einblendung: Brettpunkte unter 5 Bildstellen (Mitte, ±20 %) nach Soll-Lage, angezeigt vs. Soll,
+// zurückgerechnet in Felder (Median der 5). Fehlpose = Fehler > 1 Feld. Ausgabe je Foto + Summe. env GT, DIR (Fotos relativ zu app/), MININL (40).
+async function fehl() {
+  const { readFileSync } = await import('fs');
+  const GT = JSON.parse(readFileSync(process.env.GT, 'utf8')), DIR = process.env.DIR, SECS = +(process.env.SECS || 8), SWING = +(process.env.SWING ?? 0.08);
+  const list = Object.entries(GT).filter(([, v]) => v && v.inl >= +(process.env.MININL || 40));
+  const sum = { fotos: 0, erkannt: 0, frames: 0, sichtbar: 0, falsch: 0, fotosMitFalsch: 0 };
+  for (const [name, g] of list) {
+    const { page, errs, ok } = await open(1, QUERY, `${DIR}/${name}`);
+    if (ok !== true) { console.log(name, ok, errs); await page.close(); continue; }
+    const r = await page.evaluate(async ({ HELP, H, SECS, SWING, SRC }) => {
+      eval('(' + HELP + ')()');
+      const { TARGET_TILE_AREA: A } = await import('./js/route.js');
+      const cell = (A.x1 - A.x0) / 7;
+      const im = new Image(); im.src = SRC; await im.decode();
+      const sc = document.querySelector('a-scene'), rect = sc.canvas.getBoundingClientRect();
+      const inv = (m) => { const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2], k = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+        return [[(e * i - f * h) / k, (c * h - b * i) / k, (b * f - c * e) / k], [(f * g - d * i) / k, (a * i - c * g) / k, (c * d - a * f) / k], [(d * h - e * g) / k, (b * g - a * h) / k, (a * e - b * d) / k]]; };
+      const ap = (m, x, y) => { const w = m[2][0] * x + m[2][1] * y + m[2][2]; return [(m[0][0] * x + m[0][1] * y + m[0][2]) / w, (m[1][0] * x + m[1][1] * y + m[1][2]) / w]; };
+      window.__arClog = [];   // Bestätigung neuer Kacheln (ar.js): [Kachel, bestätigendes Ziel, Abweichung × Kachelbreite]
+      const Hi = inv(H), t0 = performance.now(), out = { frames: 0, shown: 0, bad: 0, errs: [], first: null, worst: 0, ziele: {}, alle: {} };
+      let VW = 0, VH = 0, s = 0;
+      await new Promise((res) => (function fr() {
+        const t = (performance.now() - t0) / 1000;
+        if (t > SECS) return res();
+        const vid = sc.systems['mindar-image-system'].video;
+        if (vid && vid.videoWidth) { VW = vid.videoWidth; VH = vid.videoHeight; s = Math.max(VW / im.width, VH / im.height); }
+        const dx = Math.sin((t / 6) * 2 * Math.PI) * SWING * (VW || 720);
+        __fakeCam.dx = dx;
+        if (s) {
+          out.frames++;
+          const f = Math.max(rect.width / VW, rect.height / VH), ox = (rect.width - VW * f) / 2, oy = (rect.height - VH * f) / 2;
+          const toBoard = (vx, vy) => ap(Hi, ((vx - VW / 2 - dx) / s + im.width / 2) / im.width, ((vy - VH / 2) / s + im.height / 2) / im.height);
+          const pts = [[0.5, 0.5], [0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]].map(([a, b]) => toBoard(a * VW, b * VH)).filter(([x, y]) => Math.abs(x) <= 0.5 && Math.abs(y) <= 0.5);
+          if (__shown() && pts.length) {
+            out.shown++; if (out.first == null) out.first = Math.round(t * 100) / 100;
+            const e = pts.map(([x, y]) => { const [px, py] = __pt(x, y, 0), b = toBoard((px - ox) / f, (py - oy) / f); return Math.hypot(b[0] - x, b[1] - y) / cell; }).sort((p, q) => p - q);
+            const err = e[e.length >> 1];
+            out.errs.push(err); out.worst = Math.max(out.worst, err);
+            const act = sc.object3D.getObjectByName('ar-anchor').userData.active();
+            out.alle[act] = (out.alle[act] || 0) + 1;
+            if (err > 1) { out.bad++; out.ziele[act] = (out.ziele[act] || 0) + 1; }
+          }
+        }
+        requestAnimationFrame(fr);
+      })());
+      const q = [...out.errs].sort((a, b) => a - b);
+      return { frames: out.frames, shown: out.shown, bad: out.bad, first: out.first, med: q.length ? Math.round(q[q.length >> 1] * 100) / 100 : null, worst: Math.round(out.worst * 10) / 10, falschZiele: out.ziele, ziele: out.alle, bestaetigung: __arClog.slice(0, 6).map((c) => c.join(':')).join(' ') + (__arClog.length > 6 ? ` …(${__arClog.length})` : '') };
+    }, { HELP: HELPERS.toString(), H: g.H, SECS, SWING, SRC: `${DIR}/${name}` }).catch((e) => ({ err: e.message }));
+    await page.close();
+    console.log(JSON.stringify({ foto: name, inl: g.inl, ...r, errs: errs.slice(0, 2) }));
+    if (r.err) continue;
+    sum.fotos++; sum.frames += r.frames; sum.sichtbar += r.shown; sum.falsch += r.bad;
+    if (r.shown) sum.erkannt++; if (r.bad) sum.fotosMitFalsch++;
+  }
+  console.log(JSON.stringify({ mode: 'fehl', q: QUERY, dir: DIR, ...sum, sichtbarAnteil: Math.round((sum.sichtbar / sum.frames) * 1000) / 10, falschAnteilDerSichtbaren: Math.round((sum.falsch / Math.max(1, sum.sichtbar)) * 1000) / 10 }));
+}
+if (MODE === 'fehl') await fehl();
+// „Nebel“ beim Wechsel weit → nah (docs/AR.md „Fehlposen“): Foto langsam hineinzoomen (+3 % je Schritt bis ZMAX), je Schritt
+// Nah-Stufe/Ziel, Stil von Video und Canvas (opacity/filter/transform/Grösse) und ein Bildschirmfoto der 3D-Ebene allein
+// (Video unsichtbar, Hintergrund schwarz) nach OUT/n%02d.jpg; Auswertung: Anteil nicht-schwarzer Pixel (Python).
+async function nebel() {
+  const { page, errs, ok } = await open(+(process.env.ZOOM || 1));
+  if (ok !== true) return console.log(ok, errs);
+  const shown = await page.evaluate(async ({ HELP }) => { eval('(' + HELP + ')()'); return __waitShown(10000); }, { HELP: HELPERS.toString() });
+  const ZMAX = +(process.env.ZMAX || 3);
+  let z = +(process.env.ZOOM || 1), n = 0;
+  while (shown && z < ZMAX) {
+    z *= 1.06;
+    const st = await page.evaluate(async (z) => {
+      __fakeCam.zoom = z; await new Promise((r) => setTimeout(r, 300));
+      const sc = document.querySelector('a-scene'), v = sc.systems['mindar-image-system'].video, cs = (e) => { const s = getComputedStyle(e); return [s.opacity, s.filter, s.visibility, e.style.width, e.style.height, e.style.top, e.style.left].join('|'); };
+      const A = sc.object3D.getObjectByName('ar-anchor');
+      return { z: Math.round(z * 100) / 100, shown: A.visible, ziel: A.userData.active(), video: cs(v), canvas: cs(sc.canvas), host: cs(sc.parentElement), overlays: [...document.querySelectorAll('.ar-scan,.ar-near')].map((e) => e.className + (e.hidden ? ':hidden' : ':on')).join(' ') };
+    }, z);
+    await page.evaluate(() => { document.querySelector('a-scene').systems['mindar-image-system'].video.style.visibility = 'hidden'; });
+    await page.screenshot({ path: `${process.env.OUT}/n${String(n).padStart(2, '0')}.jpg`, type: 'jpeg', quality: 80 });
+    await page.evaluate(() => { document.querySelector('a-scene').systems['mindar-image-system'].video.style.visibility = ''; });
+    console.log(JSON.stringify({ n: n++, ...st }));
+  }
+  await page.close();
+  console.log(JSON.stringify({ mode: 'nebel', errs }));
+}
+if (MODE === 'nebel') await nebel();
 if (MODE === 'shift') await latency(false);
 if (MODE === 'roll') await latency(true);
 if (MODE === 'rest') await rest(false);
@@ -311,4 +397,30 @@ if (MODE === 'detect') await detect();
 if (MODE === 'nah') await nah();
 if (MODE === 'shot') await shot();
 if (MODE === 'halt') await halt();
+// Haltezeit (docs/AR.md „Fehlposen“): nach dem Erkennen 1,5 s halten, dann Kamera blind (__fakeCam.blank). Gemessen ab „blind“:
+// wann die Einblendung auszublenden beginnt (Canvas-Deckkraft < 1), wann sie weg ist und wann der Hinweis „Brett aus dem Blick“ kommt.
+// ZOOM 1 = weit (IMG_6831), z. B. PHOTO=../Fotos/Geschmueckt/IMG_6884.jpg ZOOM=2.6 = nah (Brett > nfar × kurze Seite).
+async function hold() {
+  const { page, errs, ok } = await open(+(process.env.ZOOM || 1));
+  if (ok !== true) return console.log(ok, errs);
+  const r = await page.evaluate(async ({ HELP }) => {
+    eval('(' + HELP + ')()');
+    if (!(await __waitShown(10000))) return { err: 'nicht erkannt' };
+    await new Promise((r) => setTimeout(r, 1500));
+    const sc = document.querySelector('a-scene'), scan = document.querySelector('.ar-scan'), t0 = performance.now();
+    __fakeCam.blank = true;
+    let fade = null, gone = null, hint = null;
+    while (performance.now() - t0 < 8000 && hint == null) {
+      const t = Math.round(performance.now() - t0);
+      if (fade == null && sc.canvas.style.opacity && +sc.canvas.style.opacity < 1) fade = t;
+      if (gone == null && !__shown()) gone = t;
+      if (hint == null && !scan.hidden) hint = t;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return { ausblendenAb: fade, wegNach: gone, hinweisNach: hint };
+  }, { HELP: HELPERS.toString() });
+  await page.close();
+  console.log(JSON.stringify({ mode: 'hold', q: QUERY, photo: SRC0.split('/').pop(), zoom: +(process.env.ZOOM || 1), ...r, errs }));
+}
+if (MODE === 'hold') await hold();
 await browser.close();

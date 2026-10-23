@@ -116,7 +116,23 @@ export const GUIDE = {
     ready: 'Kamera bereit',
     plain: 'Ihr spielt mit dem Bild vom Brett.',
     cancelled: 'Alles klar, ihr spielt ohne Kamera.',
+    percent: 'Spielbrett-Erkennung lädt … {p} %',
   },
+};
+
+// Ladescreen beim Wiedereinstieg mit Kamera (Spielstand vorhanden, „Kamera nochmal versuchen“): statt der Anleitung, gleicher Fortschritt.
+export const RESUME = {
+  kicker: 'Station {n} von 5',
+  title: 'Gleich geht’s weiter!',
+  intro: 'Eure Mini-Ichs warten schon auf euch. Die Kamera startet im Hintergrund.',
+  tipsTitle: 'Kleiner Tipp',
+  tips: [
+    'Haltet das Handy ruhig und schräg von oben aufs Brett.',
+    'Nah ran geht jetzt auch – zu nah? Einfach etwas zurück.',
+    'Tippt das schwebende Icon über der Truhe an.',
+  ],
+  go: 'Weiter spielen',
+  cancel: 'Lieber ohne Kamera',
 };
 
 export const END = {

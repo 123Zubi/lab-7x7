@@ -1,7 +1,7 @@
 // Offline-Hilfe: Seite, Skripte und CSS immer frisch vom Netz (Cache nur bei Netzfehler, damit nie alte und neue Module gemischt werden),
 // Bilder/Daten network-first mit 3,5-s-Rennen, CDN-Skripte cache-first.
 // Neue Datei unter app/ → in SHELL eintragen. Bei Änderungen an dieser Datei VERSION erhöhen.
-const VERSION = '2026-10-23-1';
+const VERSION = '2026-10-23-2';
 const PREFIX = 'hl-'; // eigener Präfix: auf demselben Origin laufen andere Apps (z. B. /Lab-7x7_Kitschig/ mit 'kitschig-…') – deren Caches nie anfassen
 const APP = PREFIX + 'app-' + VERSION;
 const CDN = PREFIX + 'cdn-v1'; // unversioniert: die CDN-URLs sind versionsfest, der Cache soll Redeploys überleben
@@ -29,7 +29,7 @@ self.addEventListener('install', (e) => {
   // Alles oder nichts: fehlt eine SHELL-Datei, scheitert die Installation und der alte Service Worker samt vollständigem Cache bleibt aktiv.
   e.waitUntil(caches.open(APP).then((c) => Promise.all(SHELL.map(async (p) => {
     const url = new URL(p, self.registration.scope).href;
-    const r = await fetch(url, { cache: 'reload' });
+    const r = await fetch(url, { cache: 'no-cache' });   // nachfragen (304), nicht neu laden: targets.mind hat die Seite meist schon geholt
     if (!r.ok) throw new Error(`SHELL ${p}: ${r.status}`);
     await c.put(keyOf(url), r);
   }))).catch(async (err) => { await caches.delete(APP); throw err; }));
@@ -45,6 +45,8 @@ self.addEventListener('fetch', (e) => {
   if (CDN_HOSTS.includes(url.hostname)) return e.respondWith(cdnFirst(req));
   if (url.origin !== location.origin) return;
   if (req.mode === 'navigate' || req.destination === 'script' || req.destination === 'style') return e.respondWith(fresh(req));
+  // Spielbrett-Erkennung (6 MB): aus dem Cache, ohne Netzrennen. Neue Fassung kommt mit neuer VERSION (Installation lädt die SHELL).
+  if (url.pathname.endsWith('/targets.mind')) return e.respondWith(caches.open(APP).then((c) => c.match(keyOf(req.url))).then((hit) => hit || networkFirst(e, req)));
   e.respondWith(networkFirst(e, req));
 });
 
