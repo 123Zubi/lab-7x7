@@ -108,11 +108,14 @@ export function makePoseSmoother(THREE, { minCF = 0.5, beta = 40, dCF = 1 } = {}
  *    mit EINEM Pixel je Abbild-Pixel ab. Ist das Brett im Video viel grösser (nah), ist das stark unterabgetastet (Aliasing),
  *    die Vorlagen passen nicht mehr → Abbruch. Ab tune.near × kurze Videoseite Brettbreite verfolgt ein zweiter Tracker auf dem
  *    256-px-Abbild (liegt schon in targets.mind), darunter der normale (weit weg ist 128 px besser: gemessen).
- *    tune.boardPx: letzte Brettbreite im Video (px) für Haltezeit und Hinweis.
+ *    tune.boardPx: letzte Brettbreite im Video (px) für Haltezeit, tune.tilePx: Breite des verfolgten Ziels (bei Kacheln < Brett).
+ * 3. Kacheln (docs/AR.md „Kacheln“): tune.scale[i] = Breite von Ziel i in Brettbreiten (Ganzbrett 1). Die Nah-Stufen richten sich
+ *    nach der Breite des verfolgten Ziels (darum geht es beim Aliasing), Haltezeit nach der Brettbreite.
  */
 // imgs: Zielbilder je targetIndex (0 ohne, 1 mit Schmuck, wie in targets.mind) für den 512-px-Tracker
 const TARGET_IMGS = ['assets/target.jpg', 'assets/target-schmuck.jpg'];
-const tune = { fov: 70, near: 1, near2: 1.5, boardPx: 0, short: 1, imgs: [] };
+const TILES_SRC = 'assets/target-tiles.json';   // Kachel-Ziele (docs/AR.md „Kacheln“), von tools/make_board_images.py --tiles
+const tune = { fov: 70, near: 1, near2: 1.5, boardPx: 0, tilePx: 0, short: 1, imgs: [], scale: [], jump: 0.35, vis: 0.1, edge: 12 };
 /** 512-px-Tracking-Abbild aus dem Zielbild (Grauwert wie MindARs Compiler), Punkte vom 256-px-Abbild übernommen (× 2). */
 function bigKeyframe(kf, size, im) {
   const f = size / kf.width, w = Math.round(kf.width * f), h = Math.round(kf.height * f);
@@ -136,30 +139,69 @@ function patchMindar() {
       setTimeout(() => window.dispatchEvent(new Event('resize')));   // MindARs _resize lief schon mit dem alten Bildwinkel
     }
     const res = add0.call(this, buf);
+    // MindARs Worker wirft bei manchen entarteten Treffern (gemessen mit 11 Zielen, z. B. Nahaufnahme IMG_6867: „Cannot read
+    // properties of null“) und antwortet dann nie: die Such-/Tracking-Schleife wartet ewig, AR steht still. Fehler abfangen und
+    // die offene Anfrage als „nichts gefunden“ bzw. „verloren“ beantworten; der Worker selbst läuft weiter.
+    this.worker.addEventListener('error', (e) => {
+      e.preventDefault();
+      if (this.workerMatchDone) this.workerMatchDone({ targetIndex: -1, modelViewTransform: null });
+      if (this.workerTrackDone) this.workerTrackDone({ modelViewTransform: null });
+    });
     const T = this.tracker, P = this.projectionTransform;
     tune.short = Math.min(W, H);
+    const EDGE = tune.edge;   // px Abstand zum Videorand (Suchfenster der Vorlagen ±10 px + halbe Vorlage)
     const tiers = [null, null, null];   // ponytail: Tensoren der Nah-Tracker werden beim Kamera-Neustart nicht freigegeben (wie MindARs eigener Tracker); selten, ein paar MB   // 0: MindARs 128-px-Tracker, 1: 256 px, 2: 512 px (selbst gebaut aus target.jpg)
     let tier = 0;
     const track0 = T.track.bind(T);
-    const make = (k) => {
-      const kf = T.trackingDataList.map((d, i) => (k === 1 ? d[0] : bigKeyframe(d[0], 512, tune.imgs[i])));
+    const make = (k) => {   // 512 px nur für Ziele mit Bild (Ganzbrett); Kacheln bleiben dort beim 256er (sie sind selten so gross im Bild)
+      const kf = T.trackingDataList.map((d, i) => (k === 1 || !tune.imgs[i] ? d[0] : bigKeyframe(d[0], 512, tune.imgs[i])));
       return new T.constructor(T.markerDimensions, kf.map((d) => [d, d]), P, W, H);
     };
     T.track = (img, mv, idx) => {
       const [mw, mh] = T.markerDimensions[idx];
       const pr = (x, y) => { const Z = mv[2][0] * x + mv[2][1] * y + mv[2][3]; return [(P[0][0] * (mv[0][0] * x + mv[0][1] * y + mv[0][3])) / Z, (P[1][1] * (mv[1][0] * x + mv[1][1] * y + mv[1][3])) / Z]; };
       const a = pr(0, mh / 2), b = pr(mw, mh / 2), px = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      if (Number.isFinite(px)) tune.boardPx = px;
-      const k = tune.boardPx / tune.short, lim = [Infinity, tune.near, tune.near2];
+      if (Number.isFinite(px)) { tune.tilePx = px; tune.boardPx = px / (tune.scale[idx] || 1); }
+      const k = tune.tilePx / tune.short, lim = [Infinity, tune.near, tune.near2];
       // Hysterese (15 %): kein Hin-und-her an einer Grenze
       while (tier < 2 && lim[tier + 1] > 0 && k > lim[tier + 1]) tier++;
       while (tier > 0 && !(lim[tier] > 0 && k > lim[tier] * 0.85)) tier--;
-      if (tier === 2 && !T.trackingDataList.every((_, i) => tune.imgs[i])) tier = 1;
-      if (!tier) return track0(img, mv, idx);
-      tiers[tier] ||= make(tier);
-      return tiers[tier].track(img, mv, idx);
+      if (tier) tiers[tier] ||= make(tier);
+      const r = tier ? tiers[tier].track(img, mv, idx) : track0(img, mv, idx);
+      // Punkte am oder hinter dem Bildrand verwerfen: dort vergleicht MindAR die Vorlage mit Randpixeln und „findet“ sie trotzdem,
+      // die Pose driftet dann (gemessen beim Schwenk nah, Kachel halb aus dem Bild: bis 100 px daneben)
+      const keep = r.screenCoords.map((p) => p.x >= EDGE && p.x < W - EDGE && p.y >= EDGE && p.y < H - EDGE);
+      if (keep.every(Boolean)) return r;
+      return { ...r, worldCoords: r.worldCoords.filter((_, k) => keep[k]), screenCoords: r.screenCoords.filter((_, k) => keep[k]) };
     };
     return res;
+  };
+  // Kacheln: Verlässt ein Ziel das Bild, liefert MindARs Pose-Verfeinerung mit den letzten paar Punkten manchmal für einige
+  // Frames eine völlig falsche Pose (gemessen: Brett 900–1200 px daneben). Darum gilt ein Ziel als verloren, wenn seine Ecken
+  // in einem Frame um mehr als tune.jump × Zielbreite springen oder (nur Kacheln) weniger als tune.vis seiner Fläche im Bild
+  // liegt. Dann sucht MindAR sofort neu und findet meist die Nachbarkachel; die Einblendung hält solange die letzte gute Pose.
+  const tau0 = C.prototype._trackAndUpdate;
+  C.prototype._trackAndUpdate = async function (inputT, last, idx) {
+    const mv = await tau0.call(this, inputT, last, idx);
+    if (!mv) return mv;
+    const [w, h] = this.markerDimensions[idx], P = this.projectionTransform, W = this.inputWidth, H = this.inputHeight;
+    const pr = (m, x, y) => {
+      const Z = m[2][0] * x + m[2][1] * y + m[2][3];
+      return [(P[0][0] * (m[0][0] * x + m[0][1] * y + m[0][3])) / Z + P[0][2], (P[1][1] * (m[1][0] * x + m[1][1] * y + m[1][3])) / Z + P[1][2], Z];
+    };
+    const C4 = [[0, 0], [w, 0], [w, h], [0, h]], a = C4.map(([x, y]) => pr(last, x, y)), b = C4.map(([x, y]) => pr(mv, x, y));
+    const size = Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]);
+    const jump = Math.max(...a.map((p, k) => Math.hypot(p[0] - b[k][0], p[1] - b[k][1])));
+    if (!(jump <= tune.jump * size) || b.some((p) => !(p[2] > 0))) return null;
+    if ((tune.scale[idx] || 1) < 1) {
+      let inside = 0;
+      for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) {
+        const [x, y] = pr(mv, ((i + 0.5) / 6) * w, ((j + 0.5) / 6) * h);
+        if (x >= 0 && x < W && y >= 0 && y < H) inside++;
+      }
+      if (inside / 36 < tune.vis) return null;
+    }
+    return mv;
   };
 }
 
@@ -793,7 +835,11 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   //           Brettbreite (× kurze Videoseite) der 256-px-Tracker übernimmt (0 = nie), nhold: Haltezeit, wenn das Brett zuletzt
   //           gross im Bild war (ab nfar × kurze Seite); dazu der Hinweis „Etwas weiter weg halten“
   tune.fov = num('fov', 70); tune.near = num('near', 1); tune.near2 = num('near2', 1.5);
+  //   tjump / tvis  Plausibilität der Zielpose (Kacheln): grösster Eckensprung pro Frame (× Zielbreite), Mindestanteil einer Kachel im Bild
+  tune.jump = num('tjump', 0.35); tune.vis = num('tvis', 0.1); tune.edge = num('tedge', 12);   // tedge: Randabstand der Tracking-Punkte (px)
   const NHOLD = num('nhold', 5), NFAR = num('nfar', 1.6);
+  //   tiles   0 = Kachel-Ziele nicht anzeigen (MindAR verfolgt sie trotzdem, wenn sie in targets.mind stehen; zum Vergleichen)
+  let tiles = [];
 
   // Bildschirm wach halten (Auto-Sperre). Gleich hier, so nah wie möglich an der Start-Geste.
   let destroyed = false, wl = null, wlBusy = false;
@@ -821,6 +867,8 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
       patchMindar();
     })(),
     checkTargets(targetSrc),
+    // Kachel-Ziele (Index 2 …): Lage im Brett, gleiche Reihenfolge wie in targets.mind (tools/compile-target.html liest dieselbe Datei)
+    num('tiles', 1) ? fetch(TILES_SRC).then((r) => (r.ok ? r.json() : { tiles: [] })).then((j) => { tiles = j.tiles || []; }, () => {}) : null,
   ]).catch(bail);
   if (!container.isConnected) bail(named('Cancelled', 'abgebrochen'));
   onPhase('permission');
@@ -842,12 +890,22 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   <a-camera position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
   <a-entity id="ar-target" class="ar-tgt" mindar-image-target="targetIndex: 0"></a-entity>
   <a-entity id="ar-target-schmuck" class="ar-tgt" mindar-image-target="targetIndex: 1"></a-entity>
+  ${tiles.map((_, k) => `<a-entity class="ar-tgt" mindar-image-target="targetIndex: ${k + 2}"></a-entity>`).join('')}
 </a-scene>
 <div class="ar-scan" role="status" aria-live="polite"><div class="ar-frame"></div>
   <p class="ar-msg">Haltet die Kamera ruhig auf das Spielbrett<small>Am besten von oben, bei gutem Licht</small></p></div>`);
   const sceneEl = container.querySelector('a-scene');
-  // Zwei Ziele, ein Brett: 0 = ohne Schmuck, 1 = mit Schmuck (docs/AR.md „Schmuck“). maxTrack 1 → MindAR verfolgt immer nur eines.
+  // Ein Brett, viele Ziele: 0 = ohne Schmuck, 1 = mit Schmuck (docs/AR.md „Schmuck“), ab 2 Kacheln (Ausschnitte, „Kacheln“).
+  // maxTrack 1 → MindAR verfolgt immer nur eines. XF[i]: Ziel-i-Koordinaten → Brett-Koordinaten (Brettpose = Zielpose × XF[i]).
   const targetEls = [...container.querySelectorAll('.ar-tgt')];
+  const TH = window.AFRAME.THREE, XF = targetEls.map(() => new TH.Matrix4()), BASE = [0, 1];
+  tiles.forEach((t, k) => {
+    const [x0, y0, x1, y1] = t.rect, sc = x1 - x0;
+    tune.scale[k + 2] = sc; BASE[k + 2] = t.base;
+    XF[k + 2] = new TH.Matrix4().makeScale(1 / sc, 1 / sc, 1 / sc).multiply(new TH.Matrix4().makeTranslation(-((x0 + x1) / 2 - 0.5), -((0.5 - (y0 + y1) / 2) * aspect), 0));
+  });
+  const boardM = new TH.Matrix4();
+  const boardMatrix = (i) => boardM.multiplyMatrices(targetEls[i].object3D.matrix, XF[i]);
   const scan = container.querySelector('.ar-scan');
   const msg = scan.querySelector('.ar-msg');
   const rot = Object.assign(document.createElement('div'), { className: 'ar-rot', textContent: '📱 Bitte im Hochformat spielen' });
@@ -856,10 +914,11 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   let tracking = false, stage = null, iv = 0, live = false, restarting = false, fatalSent = false, visT = 0, rotT = 0;
   const nearEl = Object.assign(document.createElement('p'), { className: 'ar-near', hidden: true, textContent: '↕ Etwas weiter weg halten' });
   container.append(nearEl);
-  let nearLoss = false;   // Brett war beim Verlust gross im Bild → länger halten (NHOLD) und passender Hinweis
+  let nearLoss = false;   // Brett war beim Verlust gross im Bild → länger halten (NHOLD)
+  let nearMsg = false;    // auch das verfolgte Ziel (Kachel) war gross → Hinweis „zu nah“
   const showLost = () => {
     scan.classList.add('lost');
-    msg.innerHTML = nearLoss ? 'Zu nah dran – haltet die Kamera etwas weiter weg<small>So sieht sie mehr vom Brett. Das Spiel läuft weiter.</small>'
+    msg.innerHTML = nearMsg ? 'Zu nah dran – haltet die Kamera etwas weiter weg<small>So sieht sie mehr vom Brett. Das Spiel läuft weiter.</small>'
       : 'Brett aus dem Blick – haltet die Kamera wieder aufs Brett<small>Das Spiel läuft weiter.</small>';
     scan.hidden = false;
   };
@@ -901,8 +960,23 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
   // weiter seine letzte (stehende) Pose, die darf die frische Pose des anderen nicht überschreiben.
   let active = 0;
   const isTracked = (i) => { const st = sys().controller && sys().controller.trackingStates; return !!(st && st[i] && st[i].isTracking); };
-  anchor.userData.raw = () => targetEls[active].object3D;   // rohe MindAR-Pose des aktiven Ziels (Messskript)
+  anchor.userData.raw = () => ({ matrix: boardMatrix(active).clone() });   // rohe Brettpose aus dem aktiven Ziel (Messskript)
   anchor.userData.active = () => active;
+  // Übernahme durch ein anderes Ziel kurz nach dem Verlust: Liegt dessen Brettpose weit neben der zuletzt gezeigten (Winkel der
+  // Zielmitte > (0,3 + 1,5/s · Zeit seit der letzten Pose) × Zielbreite), ist es eine Fehlerkennung (gemessen beim Schwenk nah:
+  // Kachel mit Brett ~1000 px daneben). Nach Ablauf der Haltezeit (Anker unsichtbar) wird jede Erkennung genommen.
+  const vA = new TH.Vector3(), vB = new TH.Vector3(), vC = new TH.Vector3();
+  const BLEND = 0.3, blendD = new TH.Matrix4(), blendM = new TH.Matrix4(), bp = new TH.Vector3(), bq = new TH.Quaternion(), bs = new TH.Vector3();
+  const qI = new TH.Quaternion(), sI = new TH.Vector3(1, 1, 1);
+  let blendT = 0;
+  const startBlend = (i, now) => { if (anchor.visible) { blendD.copy(anchor.matrix).multiply(boardMatrix(i).invert()); blendT = now; } };
+  const implausible = (i, dt) => {
+    if (dt > 1.5) return false;
+    const sc = tune.scale[i] || 1, M = boardMatrix(i), c = new TH.Vector3().setFromMatrixPosition(XF[i].clone().invert());
+    vA.copy(c).applyMatrix4(anchor.matrix); vB.copy(c).applyMatrix4(M); vC.copy(c).setX(c.x + sc).applyMatrix4(M);
+    const ang = vA.angleTo(vB), size = vB.angleTo(vC);
+    return !(ang <= (0.3 + 1.5 * dt) * size);
+  };
   const hookTarget = () => {   // nach 'loaded' der Szene (vorher gibt es die Komponente evtl. noch nicht), vor MindARs Start
     targetEls.forEach((el, i) => {
       const tc = targetComp(i), upd0 = tc && tc.updateWorldMatrix;
@@ -913,16 +987,30 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
         if (!wm) {
           if (i !== active) return;
           const other = targetEls.findIndex((e, k) => k !== i && e.object3D.visible);
-          if (other >= 0) { active = other; return; }   // das andere Ziel zeigt schon: dort weiter
-          if (anchor.visible && !lostAt) { lostAt = now; nearLoss = tune.boardPx / tune.short >= NFAR; }
+          if (other >= 0) { active = other; startBlend(other, now); return; }   // ein anderes Ziel zeigt schon: dort weiter
+          if (anchor.visible && !lostAt) { lostAt = now; nearLoss = tune.boardPx / tune.short >= NFAR; nearMsg = tune.tilePx / tune.short >= NFAR; }
           return;
         }
         if (i !== active) {
           if (anchor.visible && !lostAt && isTracked(active)) return;   // aktives Ziel läuft noch: anderes ignorieren
+          if (anchor.visible && implausible(i, (now - poseT) / 1000)) {   // Fehlerkennung (sich wiederholendes Labyrinth-Muster)
+            const st = sys().controller && sys().controller.trackingStates;
+            if (st && st[i]) st[i].isTracking = false;   // MindAR sucht im nächsten Frame neu
+            return;
+          }
           active = i;
+          // Wechsel ohne Sprung: die beiden Ziele schätzen das Brett um einige px verschieden. Den Unterschied als Korrektur
+          // merken und in BLEND s auf null abbauen (statt ihn in einem Frame durchzureichen; gemessen bis 47 px Sprung).
+          startBlend(i, now);
         }
-        if (!anchor.visible) smoother.reset();
-        smoother.filterMatrix(el.object3D.matrix, (now - poseT) / 1000, anchor.matrix);
+        if (!anchor.visible) { smoother.reset(); blendT = 0; }
+        let M = boardMatrix(i);   // Kachel: Kachelpose × XF = Brettpose
+        const bk = blendT ? 1 - (now - blendT) / 1000 / BLEND : 0;
+        if (bk > 0) {
+          blendD.decompose(bp, bq, bs); bp.multiplyScalar(bk); bq.slerp(qI, 1 - bk); bs.lerp(sI, 1 - bk);
+          M = blendM.compose(bp, bq, bs).multiply(M);
+        } else blendT = 0;
+        smoother.filterMatrix(M, (now - poseT) / 1000, anchor.matrix);
         anchor.matrixWorldNeedsUpdate = true;
         poseT = now;
         if (lostAt || !anchor.visible) { lostAt = 0; setFade(1); anchor.visible = tracking = true; scan.hidden = true; }
@@ -936,7 +1024,8 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
       if (k >= FADE) { hideNow(); showLost(); } else setFade(k > 0 ? 1 - k / FADE : 1);
     }
     // „Etwas weiter weg halten“: solange das Brett sehr gross im Bild ist (oder nah verloren und noch gehalten)
-    const big = anchor.visible && (lostAt ? nearLoss : tune.boardPx / tune.short >= (nearEl.hidden ? NFAR : NFAR * 0.9));
+    // Kacheln: nach der Breite des verfolgten Ziels, nicht des Bretts (nah dran übernimmt eine Kachel, das ist gewollt)
+    const big = anchor.visible && (lostAt ? nearMsg : tune.tilePx / tune.short >= (nearEl.hidden ? NFAR : NFAR * 0.9));
     if (nearEl.hidden === big) nearEl.hidden = !big;
     requestAnimationFrame(holdTick);
   })();
@@ -985,7 +1074,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
     restarting = true;
     targetEls.forEach((el, i) => { if (el.object3D.visible && targetComp(i)) targetComp(i).updateWorldMatrix(null); });
     hideNow();   // altes Bild nicht stehen lassen (keine Haltezeit beim Neustart)
-    nearLoss = false;
+    nearLoss = nearMsg = false;
     scan.classList.remove('lost');
     msg.innerHTML = 'Kamera startet neu …<small>Haltet die Kamera aufs Brett</small>';
     scan.hidden = false;
@@ -1096,7 +1185,7 @@ export async function createArStage(container, { onPhase = () => {}, onFatal = (
       nFr++;
       if (now - t > 1000) {
         const v = sys().video, k = 1000 / (now - t);
-        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · smooth ${sm.minCF}/${sm.beta} · hold ${HOLD} · mincf ${minCF} · Ziel ${active ? 'Schmuck' : 'ohne'}`;
+        hud.textContent = `Video ${v ? v.videoWidth + '×' + v.videoHeight : '?'} · Tracking ${Math.round(nUpd * k)}/s · Bild ${Math.round(nFr * k)}/s · smooth ${sm.minCF}/${sm.beta} · hold ${HOLD} · mincf ${minCF} · Ziel ${(BASE[active] ? 'Schmuck' : 'ohne') + (active > 1 ? ' Kachel ' + (active - 2) : '')}`;
         nUpd = nFr = 0; t = now;
       }
       requestAnimationFrame(count);

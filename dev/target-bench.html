@@ -1,0 +1,59 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Erkennungs-Benchmark</title></head>
+<body style="background:#111;color:#0f0;font:13px monospace"><pre id="o">init</pre>
+<script type="module">
+// Erkennungsrate einer .mind-Datei mit Fotos (MindAR-Controller direkt, ohne Video/A-Frame). Weiterentwicklung von docs/target-bench.html.
+//   http://localhost:8111/app/dev/target-bench.html?mind=../targets.mind&n=30&seed=0&photos=../../Fotos/IMG_6831.jpeg,...
+// Je Foto n zufällige, geseedete Ansichten (Zoom zmin–zmax, Standard 0,4–1; > 1 = näher als aufgenommen; ±25°, Verschiebung),
+// je Ansicht bis zu 9 Detektor-Aufrufe (ein voller Zyklus des wandernden Suchfensters). asis=1: genau eine Ansicht wie aufgenommen.
+// Ergebnis: window.bench (detected je Foto, idx = Treffer je Ziel, ms = mittlere Dauer eines Detektor-Aufrufs inkl. Matching aller Ziele).
+const Q = new URLSearchParams(location.search);
+const mind = Q.get('mind') || '../targets.mind', N = +(Q.get('n') || 30), SEED = +(Q.get('seed') || 0), ASIS = Q.has('asis');
+const ZMIN = +(Q.get('zmin') || 0.4), ZMAX = +(Q.get('zmax') || 1);
+const photos = (Q.get('photos') || '').split(',').filter(Boolean);
+const out = (t) => (document.getElementById('o').textContent = t);
+const rng = (seed) => () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+window.bench = { mind, rows: [], done: false };
+try {
+  await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js');
+  const W = 720, H = 1280;
+  const ctl = new window.MINDAR.IMAGE.Controller({ inputWidth: W, inputHeight: H, maxTrack: 1, onUpdate: () => {} });
+  const { dimensions } = await ctl.addImageTargets(mind);
+  // MindARs Worker wirft selten bei entarteten Treffern und antwortet dann nie (wie in ar.js abgefangen): als „nicht erkannt“ zählen
+  window.bench.workerErrors = 0;
+  ctl.worker.addEventListener('error', (e) => { e.preventDefault(); window.bench.workerErrors++; if (ctl.workerMatchDone) ctl.workerMatchDone({ targetIndex: -1, modelViewTransform: null }); });
+  const ALL = dimensions.map((_, i) => i);
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  let tSum = 0, tN = 0;
+  for (const name of photos) {
+    const img = new Image(); img.src = name; await img.decode();
+    const R = rng(12345 + SEED * 99991 + name.charCodeAt(name.length - 5) * 7 + name.charCodeAt(name.length - 6));
+    let det = 0; const fr = [], idx = ALL.map(() => 0);
+    for (let i = 0; i < (ASIS ? 1 : N); i++) {
+      let zoom = ZMIN + (ZMAX - ZMIN) * R(), rot = (R() - 0.5) * 50, tx = (R() - 0.5) * 0.24 * W, ty = (R() - 0.5) * 0.24 * H;
+      if (ASIS) zoom = 1, rot = tx = ty = 0;
+      g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#333'; g.fillRect(0, 0, W, H);
+      const s = Math.max(W / img.width, H / img.height) * zoom;
+      g.translate(W / 2 + tx, H / 2 + ty); g.rotate(rot * Math.PI / 180);
+      g.drawImage(img, -img.width * s / 2, -img.height * s / 2, img.width * s, img.height * s);
+      let hit = 0;
+      for (let k = 1; k <= 9; k++) {
+        const input = ctl.inputLoader.loadInput(cv);
+        const t0 = performance.now();
+        const r = await ctl._detectAndMatch(input, ALL);
+        tSum += performance.now() - t0; tN++;
+        input.dispose();
+        if (r && r.targetIndex >= 0) { hit = k; idx[r.targetIndex]++; break; }
+      }
+      if (hit) det++;
+      fr.push(hit);
+    }
+    window.bench.rows.push({ photo: name.split('/').pop(), detected: det, of: ASIS ? 1 : N, frames: fr.join(''), idx: idx.join('/') });
+    out(JSON.stringify(window.bench.rows, null, 1));
+  }
+  window.bench.ms = +(tSum / tN).toFixed(1);
+  window.bench.done = true;
+  out(JSON.stringify(window.bench.rows, null, 1) + '\nDONE ' + window.bench.ms + ' ms/Aufruf');
+} catch (e) { window.bench.error = e.message; out('ERR ' + e.message + e.stack); window.bench.done = true; }
+</script></body></html>

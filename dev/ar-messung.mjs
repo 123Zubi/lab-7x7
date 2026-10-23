@@ -1,6 +1,6 @@
 // Messungen AR-Stabilität (docs/AR.md „Runde 5“): Fake-Kamera + echtes MindAR, createArStage direkt in app/index.html.
 //   python3 -m http.server 8105 --bind 127.0.0.1      (im Projektordner)
-//   node app/dev/ar-messung.mjs <mode> [url-query]     mode = rest|icon|shift|roll|dist|detect|nah
+//   node app/dev/ar-messung.mjs <mode> [url-query]     mode = rest|icon|shift|roll|dist|detect|nah|halt|pan|shot
 // env PORT (8105), PHOTO (IMG_6831 oder Pfad relativ zu app/, z. B. ../Fotos/Nahaufnahmen/IMG_6862.jpg), VW/VH (Viewport 390×844)
 // env: NOISE (Bildrauschen, 0.15), W/H (Videogrösse, 720×1280), ICON=1 (shift: Icon statt Brett), ZS (detect: Zoomstufen),
 //      PLAYWRIGHT (Ordner mit node_modules/playwright). Ausgabe: JSON je Lauf; „roh“ = MindAR-Pose, „anzeige“/„brett“ = Anker.
@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
 const [MODE, QUERY = ''] = process.argv.slice(2);
 const W = +(process.env.W || 720), H = +(process.env.H || 1280), PHOTO = process.env.PHOTO || 'IMG_6831';
 const NOISE = +(process.env.NOISE ?? 0.15), PORT = process.env.PORT || 8105;
-const VW = +(process.env.VW || 390), VH = +(process.env.VH || 844);
+const VW = +(process.env.VW || 390), VH = +(process.env.VH || 844), WOBBLE = +(process.env.WOBBLE || 0);
 const SRC = PHOTO.includes('/') ? PHOTO : `../Fotos/${PHOTO}.jpeg`;
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
@@ -18,14 +18,14 @@ const std = (a) => { const m = mean(a); return Math.sqrt(mean(a.map((x) => (x - 
 const r2 = (x) => Math.round(x * 100) / 100;
 
 async function open(zoom = 1, query = QUERY) {
-  const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 2 });
+  const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: +(process.env.DSF || 2) });
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
   page.on('console', (m) => m.type() === 'error' && !m.text().includes('favicon') && errs.push(m.text()));
   await page.goto(`http://localhost:${PORT}/app/index.html?reset=1&${query}`);
-  const ok = await page.evaluate(async ({ SRC, NOISE, W, H, zoom }) => {
+  const ok = await page.evaluate(async ({ SRC, NOISE, W, H, zoom, WOBBLE }) => {
     const fc = await import('./dev/fake-camera.js?v=' + Date.now());
-    const cv = await fc.install(SRC, { wobble: 0, noise: NOISE, width: W, height: H });
+    const cv = await fc.install(SRC, { wobble: WOBBLE, noise: NOISE, width: W, height: H });
     cv.zoom = zoom;
     const host = Object.assign(document.createElement('div'), { id: 'mhost' });
     host.style.cssText = 'position:fixed;inset:0;z-index:9999';
@@ -40,7 +40,7 @@ async function open(zoom = 1, query = QUERY) {
       tg.addEventListener('targetUpdate', () => __raw.upd++);
     });
     return true;
-  }, { SRC, NOISE, W, H, zoom }).catch((e) => 'ERR ' + e.message);
+  }, { SRC, NOISE, W, H, zoom, WOBBLE }).catch((e) => 'ERR ' + e.message);
   return { page, errs, ok };
 }
 // in der Seite: Bildschirmpunkt eines Zielpunkts auf dem angezeigten Anker (neu: 'ar-anchor', alt: #ar-target)
@@ -206,6 +206,102 @@ async function nah() {
   out.errs = errs;
   console.log(JSON.stringify(out));
 }
+// Halten nah und schräg (docs/AR.md „Kacheln“): Foto wie aufgenommen (ZOOM, Standard 1), Handwackeln (WOBBLE, hier 0,004),
+// Erkennung abwarten (8 s), dann HOLD s halten: Anteil der Frames mit Einblendung, MindAR-Verluste, benutzte Ziele, Tracking/s, Bild/s.
+async function halt() {
+  const { page, errs, ok } = await open(+(process.env.ZOOM || 1));
+  if (ok !== true) return console.log(ok, errs);
+  const r = await page.evaluate(async ({ HELP, HOLD }) => {
+    eval('(' + HELP + ')()');
+    const t0 = performance.now();
+    if (!(await __waitShown(8000))) return { ms: null };
+    const ms = Math.round(performance.now() - t0), A = document.querySelector('a-scene').object3D.getObjectByName('ar-anchor');
+    let n = 0, shown = 0, losses = 0, was = true; const used = {}, u0 = __raw.upd, s0 = performance.now();
+    await new Promise((res) => (function f() {
+      if (performance.now() - s0 > HOLD * 1000) return res();
+      n++; const sh = __shown(); if (sh) shown++; if (was && !sh) losses++; was = sh;
+      const st = document.querySelector('a-scene').systems['mindar-image-system'].controller.trackingStates;
+      const ti = st.findIndex((x) => x.isTracking); used[ti] = (used[ti] || 0) + 1;
+      requestAnimationFrame(f);
+    })());
+    return { ms, sichtbar: Math.round((shown / n) * 100), verloren: losses, ziele: Object.keys(used).filter((k) => used[k] > n * 0.05).join('/'), hz: Math.round((__raw.upd - u0) / HOLD), fps: Math.round(n / HOLD) };
+  }, { HELP: HELPERS.toString(), HOLD: +(process.env.HOLD || 10) });
+  await page.close();
+  console.log(JSON.stringify({ mode: 'halt', q: QUERY, photo: SRC.split('/').pop(), ...r, errs }));
+}
+// Schwenk nah über das Brett (docs/AR.md „Kacheln“): PHOTO = entzerrtes Zielbild (z. B. assets/target-schmuck.jpg), Zoom ZOOM (2,4),
+// seitlich hin und her (±PAN × Brettbreite). Weil das Foto selbst das Zielbild ist, ist die Soll-Lage jedes Brettpunkts bekannt:
+// Fehler = Abstand der angezeigten (geglätteten) bzw. rohen Brettpose zur Soll-Lage in Video-px (Bildmitte und ±0,12 Brettbreiten darum), Sprung = grösste Änderung pro Frame
+// (Fehleränderung, d. h. ohne die Fotobewegung). Dazu: welche Ziele (0/1 Ganzbrett, ab 2 Kacheln) übernommen haben und wie oft die Einblendung weg war.
+async function pan() {
+  const Z = +(process.env.ZOOM || 2.4), PAN = +(process.env.PAN || 0.35);
+  const { page, errs, ok } = await open(Z);
+  if (ok !== true) return console.log(ok, errs);
+  const r = await page.evaluate(async ({ HELP, Z, PAN }) => {
+    eval('(' + HELP + ')()');
+    if (!(await __waitShown(10000))) return { err: 'nicht erkannt' };
+    await new Promise((r) => setTimeout(r, 1000));
+    const sc = document.querySelector('a-scene'), vid = sc.systems['mindar-image-system'].video, rect = sc.canvas.getBoundingClientRect();
+    const VWd = vid.videoWidth, VHd = vid.videoHeight, f = Math.max(rect.width / VWd, rect.height / VHd);
+    const ox = (rect.width - VWd * f) / 2, oy = (rect.height - VHd * f) / 2, img = __fakeCam.img || null;
+    const S = Math.max(VWd / 1000, VHd / 1000) * Z * 1000, A = PAN * S;   // Brettbreite in Video-px
+    const toV = ([x, y]) => [(x - ox) / f, (y - oy) / f];
+    const soll = (bx, by) => [VWd / 2 + (__fakeCam.dx || 0) + bx * S, VHd / 2 - by * S];
+    // Messpunkte im sichtbaren Bild: Bildmitte und ±0,12 Brettbreiten (≈ ±0,85 Felder) darum, folgen dem Schwenk
+    const P0 = [[0, 0], [0.12, 0.12], [-0.12, -0.12], [0.12, -0.12], [-0.12, 0.12]];
+    let P = P0;
+    const prog = [[1, 0], [3, A], [6, -A], [3, 0]];
+    const pos = (t) => { let s = 0, from = 0; for (const [d, to] of prog) { if (t < s + d) return from + (to - from) * (t - s) / d; s += d; from = to; } return from; };
+    const tot = prog.reduce((a, p) => a + p[0], 0), t0 = performance.now();
+    let n = 0, shown = 0, losses = 0, was = true, maxJ = 0, lastE = null; const errA = [], errR = [], seq = [], big = [];
+    await new Promise((res) => (function fr() {
+      const t = (performance.now() - t0) / 1000;
+      if (t > tot) return res();
+      __fakeCam.dx = pos(t);
+      P = P0.map(([x, y]) => [x - (__fakeCam.dx || 0) / S, y]);
+      n++; const sh = __shown(); if (sh) shown++; if (was && !sh) losses++; was = sh;
+      const act = document.querySelector('a-scene').object3D.getObjectByName('ar-anchor').userData.active();
+      if (seq[seq.length - 1] !== act) seq.push(act);
+      if (sh) {
+        const e = P.map(([x, y]) => { const a = toV(__pt(x, y, 0)), b = soll(x, y); return [a[0] - b[0], a[1] - b[1]]; });
+        errA.push(Math.max(...e.map((d) => Math.hypot(...d))));
+        if (errA[errA.length - 1] > 60) big.push([Math.round(t * 100) / 100, act, Math.round(errA[errA.length - 1])]);
+        const e2 = P.map(([x, y]) => { const a = toV(__pt(x, y, 0, __rawM())), b = soll(x, y); return Math.hypot(a[0] - b[0], a[1] - b[1]); });
+        errR.push(Math.max(...e2));
+        if (lastE && seq.length) maxJ = Math.max(maxJ, Math.hypot(e[0][0] - lastE[0], e[0][1] - lastE[1]));
+        lastE = e[0];
+      } else lastE = null;
+      requestAnimationFrame(fr);
+    })());
+    const q = (a, k) => { const b = [...a].sort((x, y) => x - y); return b.length ? Math.round(b[Math.floor((b.length - 1) * k)] * 10) / 10 : null; };
+    return { brettPx: Math.round(S), sichtbar: Math.round(shown / n * 100), verloren: losses, ziele: seq.join('>'), fehlerAnzeigeMedian: q(errA, 0.5), fehlerAnzeigeP90: q(errA, 0.9), fehlerRohMedian: q(errR, 0.5), fehlerRohP90: q(errR, 0.9), maxSprungProFrame: Math.round(maxJ * 10) / 10, ueber60px: big.length, big: big.slice(0, 12) };
+  }, { HELP: HELPERS.toString(), Z, PAN });
+  await page.close();
+  console.log(JSON.stringify({ mode: 'pan', q: QUERY, photo: SRC.split('/').pop(), zoom: Z, ...r, errs }));
+}
+if (MODE === 'pan') await pan();
+// Kosten (docs/AR.md „Kacheln“): Such-Schleife (Detektor-Aufrufe/s ohne Brett im Bild), Bild/s dabei,
+// danach Brett im Bild: Tracking/s und Bild/s
+async function perf() {
+  const { page, errs, ok } = await open(1);
+  if (ok !== true) return console.log(ok, errs);
+  const r = await page.evaluate(async ({ HELP }) => {
+    eval('(' + HELP + ')()');
+    await __waitShown(10000);
+    const c = document.querySelector('a-scene').systems['mindar-image-system'].controller;
+    let nDet = 0; const d0 = c._detectAndMatch; c._detectAndMatch = function (...a) { nDet++; return d0.apply(this, a); };
+    const fps = async (ms) => { let n = 0; const s = performance.now(); await new Promise((res) => (function f() { n++; performance.now() - s > ms ? res() : requestAnimationFrame(f); })()); return Math.round(n / (ms / 1000)); };
+    const other = new Image(); other.src = 'assets/ui/start.jpg'; await other.decode();   // strukturreiches Bild ohne Brett: Matching läuft voll
+    __fakeCam.img = other; await new Promise((r) => setTimeout(r, 2500)); nDet = 0;
+    const fSearch = await fps(5000), det = nDet / 5;
+    __fakeCam.img = null; await __waitShown(10000); await new Promise((r) => setTimeout(r, 1000));
+    const u0 = __raw.upd, fTrack = await fps(5000);
+    return { suchAufrufeProS: Math.round(det * 10) / 10, bildProSSuche: fSearch, trackingProS: Math.round((__raw.upd - u0) / 5), bildProSTracking: fTrack };
+  }, { HELP: HELPERS.toString() });
+  await page.close();
+  console.log(JSON.stringify({ mode: 'perf', q: QUERY, ...r, errs }));
+}
+if (MODE === 'perf') await perf();
 if (MODE === 'shift') await latency(false);
 if (MODE === 'roll') await latency(true);
 if (MODE === 'rest') await rest(false);
@@ -214,4 +310,5 @@ if (MODE === 'dist') await dist();
 if (MODE === 'detect') await detect();
 if (MODE === 'nah') await nah();
 if (MODE === 'shot') await shot();
+if (MODE === 'halt') await halt();
 await browser.close();
