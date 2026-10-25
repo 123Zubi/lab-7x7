@@ -29,6 +29,13 @@ const live = {
 
 const show = (name) => { ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s).hidden = s !== name)); fitScene(); };
 
+// Klicksperre nach Screenwechsel (wie panelAt beim Panel): Jedes Ein-/Ausblenden eines Screens oder Overlays sperrt Klicks für 450 ms,
+// damit der zweite Tipp eines Doppeltipps nicht auf dem Folge-Screen landet (z. B. „Nochmals spielen“ → Setup-Guide im Startmenü).
+let screenAt = -1e9;
+const lockObs = new MutationObserver(() => (screenAt = performance.now()));
+['#screen-start', '#screen-game', '#screen-end', '#guide', '#setup', '#card'].forEach((q) => lockObs.observe($(q), { attributes: true, attributeFilter: ['hidden'] }));
+addEventListener('click', (e) => { if (performance.now() - screenAt < 450) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+
 /* Szenenbild (start.jpg/abschluss.jpg, 828x1242) so legen, dass die Gesichter zwischen Titelkasten und Buttons frei bleiben.
  *  Motiv-Box in Bildanteilen (start: Tor mit Sonne bis Schultern des Paars, Rückansicht); start: Bild füllt die Breite, oben Himmelfarbe; end: notfalls kleiner, unten bündig (Rand Elfenbein). */
 const FACES = { start: { x: 0.5, y0: 0.17, y1: 0.45 }, end: { x: 0.54, y0: 0.15, y1: 0.29, shrink: true } };
@@ -293,6 +300,8 @@ function goHome() {
 /** „Nochmals spielen“: Fortschritt, Fragen, Joker, Karten zurück, ohne Reload zurück zum Startmenü (Mit/Ohne Kamera neu wählbar).
  *  Die Bühne wurde in showEnd zerstört (Kamera aus); hier verschwindet auch ihr Container. Die nächsten Fragen zieht startGame neu. */
 function playAgain() {
+  if ($('#btn-again').disabled) return;
+  $('#btn-again').disabled = true;   // erst showEnd gibt ihn wieder frei
   sound.click();
   session++;   // wie goHome: alles, was aus der alten Runde noch wartet, ist verwaist
   if (quiz) quiz.stop();
@@ -318,6 +327,7 @@ function showEnd() {
   const list = [...STATIONS, FINALE];
   const paint = () => ($('#end-list').innerHTML = list.map((s, k) => `<li>${stationBadge(k)}<span class="p-name">${s.name}</span></li>`).join(''));
   paint(); Promise.all(list.map((s) => iconImg(s.theme))).then(paint);
+  $('#btn-again').disabled = false;
   show('end');
   notify('end');
   sound.fanfare();
