@@ -112,15 +112,15 @@ const HEART = '<svg class="cf-heart" viewBox="0 0 24 24" aria-hidden="true"><pat
 const AUTO_OPEN_MS = 10000;
 /** Schatz auf dem Feld (Truhe + schwebendes Icon), bis er angetippt wird (oder 10 s vergehen). Liefert (Fallback) die Position des Icons für den Flug. */
 async function treasureScene(k) {
-  const S = stop(k);
+  const S = stop(k), my = session;
   if (!stage.showCard) return null;   // Bühne ohne Schatz-Szene (älteres ar.js): direkt zur Vollbild-Karte
   const icon = await iconImg(S.theme);   // Kartenbild nur vorladen, die Truhe wartet nicht darauf
+  if (my !== session) return null;
   probe(`assets/cards/${S.theme}.jpg`);
   showPanel(`${bubble(`<p>${S.bubble}</p><p class="b-ask">${CARDS[k].lift}</p>`, k < 4 ? 'arrive' : 'finale')}<p class="tap-hint">${READY.tap}</p>`);
   // Wird das Icon 10 s nicht angetippt, öffnet sich die Karte von selbst (Reload in diesem Zustand: Uhr beginnt neu).
   let timer;
   const auto = new Promise((res) => (timer = setTimeout(() => res('auto'), AUTO_OPEN_MS)));
-  const my = session;
   let from = await Promise.race([stage.showCard(...S.pos, { icon, theme: S.theme }), auto]);
   clearTimeout(timer);
   if (my !== session) return null;   // inzwischen zurück zum Start
@@ -137,8 +137,9 @@ async function treasureScene(k) {
 /** Vollbild-Karte. Schritt 'back': fliegt von `from` (Icon) zur Mitte und zeigt die Rückseite, bis sie angetippt wird.
  *  Schritt 'open': 3D-Flip auf die Vorderseite (Glöckchen, Goldfunken; Hauptschatz mit Konfetti), dann „Weiter“. Beide Schritte überstehen einen Reload. */
 async function openCard(k, from) {
-  const C = CARDS[k], S = stop(k), grand = k === 4, host = $('#card');
+  const C = CARDS[k], S = stop(k), grand = k === 4, host = $('#card'), my = session;
   const [[img], back] = await Promise.all([cardImgs(S.theme), probe('assets/cards/rueckseite.jpg')]);
+  if (my !== session) return;   // inzwischen zurück zum Start: keine Karte über dem Startmenü
   const sparks = Array.from({ length: grand ? 22 : 12 }, (_, j) => `<span class="cf-spark" style="--a:${(360 / (grand ? 22 : 12)) * j}deg;--d:${(j % 4) * 60}ms"></span>`).join('');
   const motes = Array.from({ length: 10 }, (_, j) => `<span class="cf-mote" style="--x:${8 + j * 9}%;--t:${3 + (j % 4)}s;--d:${(j * 0.37).toFixed(2)}s"></span>`).join('');
   host.innerHTML = `<div class="cf-motes" aria-hidden="true">${motes}</div>
@@ -232,10 +233,11 @@ async function run() {
       if (step() !== 'card') setStep('card');
       hidePanel();
       // Wechselt die Bühne mitten im Lauf oder während der Truhe (Kamera fällt aus / kommt zurück), auf der neuen Bühne wiederholen.
-      for (let s = null; s !== stage;) { s = stage; await s.walkTo(k); }
+      // Nicht nach „Zurück zum Start“/„Nochmals spielen“: dann gehört die neue Bühne einem neuen Ablauf (sonst zwei Abläufe auf einer Bühne).
+      for (let s = null; s !== stage && !gone();) { s = stage; await s.walkTo(k); }
       if (gone()) return;
       stage.cheer();
-      for (let s = null; s !== stage;) { s = stage; from = await treasureScene(k); }
+      for (let s = null; s !== stage && !gone();) { s = stage; from = await treasureScene(k); }
       if (gone()) return;
       setStep('back');
     }
@@ -292,6 +294,10 @@ function goHome() {
  *  Die Bühne wurde in showEnd zerstört (Kamera aus); hier verschwindet auch ihr Container. Die nächsten Fragen zieht startGame neu. */
 function playAgain() {
   sound.click();
+  session++;   // wie goHome: alles, was aus der alten Runde noch wartet, ist verwaist
+  if (quiz) quiz.stop();
+  quiz = null;
+  hidePanel();
   endTimers.forEach(clearTimeout); endTimers = [];   // Konfetti-Nachschub des Abschlusses stoppen
   reset();
   $('#card').hidden = true; $('#card').innerHTML = '';

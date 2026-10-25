@@ -45,8 +45,7 @@ export async function ensureQuestions() {
 
 /** Ersatzfrage für Stufe `lv`: ungespielt aus derselben Stufe, sonst der nächstleichteren, sonst irgendeine ungespielte,
  *  sonst irgendeine, die in diesem Spiel noch nicht vorkam. Gilt sofort als gespielt (PLAYED_KEY) und landet in state.extraIds. */
-async function drawExtra(lv) {
-  const pool = await loadPool();
+function drawExtra(pool, lv) {
   const played = readPlayed();
   const used = new Set([...state.qs.map((q) => q.id), ...(state.extraIds || [])]);
   const any = (c) => (c.length ? c[Math.floor(Math.random() * c.length)] : null);
@@ -61,7 +60,10 @@ async function drawExtra(lv) {
 }
 
 export function createQuiz({ root, stage, sound }) {
-  let idx = 0, active = false, busy = false, done = null, shownAt = 0;
+  // tok: Runden-/Frage-Token. ask() und stop() zählen hoch; eine noch laufende Auswertung (pick) merkt nach jedem Warten,
+  // dass sie veraltet ist, und fasst danach weder Spielstand, DOM noch `done` an. busy gehört immer nur zum aktuellen Token.
+  let idx = 0, tok = 0, active = false, busy = false, done = null, shownAt = 0;
+  const live = (my) => active && my === tok;
   const early = () => performance.now() - shownAt < 400; // Klicksperre nach render: Doppeltipp auf „Zur Frage“ darf keinen Joker treffen
   const cur = () => state.extra || (state.usingBackup ? state.qs[idx].backup : state.qs[idx].question);
   const btns = () => [...root.querySelectorAll('.ans')];
@@ -105,7 +107,12 @@ export function createQuiz({ root, stage, sound }) {
 
   async function pick(i) {
     if (i < 0 || !active || busy || early() || state.wrong.includes(i) || state.gone.includes(i)) return;
+    const my = tok;
     busy = true;
+    try { await judge(i, my); } finally { if (my === tok) busy = false; }   // nie dauerhaft busy, auch nicht bei Fehlern
+  }
+
+  async function judge(i, my) {
     const q = cur(), b = btns()[i];
     sound.click();
     stage.highlightDot && stage.highlightDot(DOTS[i].color);
@@ -113,7 +120,7 @@ export function createQuiz({ root, stage, sound }) {
     sound.tension();
     say('Ist das eure endgültige Antwort?');
     await sleep(1100);
-    if (!active) return;
+    if (!live(my)) return;
     b.classList.remove('locked');
     if (i === q.correct) {
       b.classList.add('right');
@@ -123,8 +130,10 @@ export function createQuiz({ root, stage, sound }) {
       state.wrong = []; state.gone = [];
       save();
       await sleep(1300);
-      active = false; busy = false;
-      done && done();
+      if (!live(my)) return;
+      const d = done;
+      active = false; done = null;
+      d && d();
       return;
     }
     state.wrong.push(i);
@@ -133,7 +142,9 @@ export function createQuiz({ root, stage, sound }) {
     if ((state.wrongCount = state.wrong.length) >= 2) {
       // Richtige Antwort zeigen, dann neue Frage. Die neue Frage steht schon VOR dem Warten im Spielstand: ein Reload zeigt sie direkt.
       const easier = !state.usingBackup;
-      if (easier) state.usingBackup = true; else state.extra = await drawExtra(idx + 1);
+      const pool = easier ? null : await loadPool();
+      if (!live(my)) return;
+      if (easier) state.usingBackup = true; else state.extra = drawExtra(pool, idx + 1);
       Object.assign(state, { wrongCount: 0, wrong: [], gone: [] });
       save();
       b.classList.add(easier ? 'wrong' : 'off'); b.disabled = true;   // wie paint(): Hauptfrage rot, sonst ausgegraut
@@ -141,15 +152,13 @@ export function createQuiz({ root, stage, sound }) {
       stage.highlightDot && stage.highlightDot(DOTS[q.correct].color);
       say(`Die richtige Antwort war ${LETTERS[q.correct]}: ${q.options[q.correct]}. ${easier ? 'Hier kommt eine leichtere Frage!' : 'Hier kommt eine neue Frage!'}`, 'pity');
       await sleep(REVEAL_MS);
-      if (!active) return;
+      if (!live(my)) return;
       stage.highlightDot && stage.highlightDot(null);
-      if (active) render();
-      busy = false;
+      render();
       return;
     }
     save(); paint();
     say(...wrongMsg());
-    busy = false;
   }
 
   function fifty() {
@@ -165,7 +174,7 @@ export function createQuiz({ root, stage, sound }) {
   if (stage.onDotTap) stage.onDotTap((c) => pick(typeof c === 'number' ? c : DOTS.findIndex((d) => d.color === c)));
 
   return {
-    ask(i) { idx = i; active = true; busy = false; render(); return new Promise((r) => (done = r)); },
-    stop() { active = false; done = null; },   // „Zurück zum Start“: laufende Auswertung malt nichts mehr
+    ask(i) { tok++; idx = i; active = true; busy = false; render(); return new Promise((r) => (done = r)); },
+    stop() { tok++; active = false; busy = false; done = null; },   // „Zurück zum Start“, „Nochmals spielen“: laufende Auswertung ist verwaist
   };
 }
