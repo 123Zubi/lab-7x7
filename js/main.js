@@ -1,5 +1,6 @@
 // Ablaufsteuerung: Start → Anleitung → (AR | Fallback) → je Station: bereit? → Frage → Paar läuft zum Feld → Karte schwebt → Vollbild-Karte
 // → nach Karte 4: letzte Frage (5) → Podest → Flitterwochen-Karte → Abschluss. (Neuer Ablauf, docs/ARCHITEKTUR.md 2026-10-21; keine Geldbeträge.)
+import { notify } from './notify.js';   // vor state.js: liest ?reset=all, bevor state.js den Parameter entfernt
 import { state, save, reset, isDebug } from './state.js';
 import { STATIONS, FINALE, INTRO, GUIDE, RESUME, END, READY, CARDS, CARD_UI, POSES, HOME } from './content.js';
 import { sound, isMuted, toggleMute } from './sound.js';
@@ -29,8 +30,8 @@ const live = {
 const show = (name) => { ['start', 'game', 'end'].forEach((s) => ($('#screen-' + s).hidden = s !== name)); fitScene(); };
 
 /* Szenenbild (start.jpg/abschluss.jpg, 828x1242) so legen, dass die Gesichter zwischen Titelkasten und Buttons frei bleiben.
- *  Gesichter-Box in Bildanteilen; start: Bild füllt die Breite, oben Himmelfarbe; end: notfalls kleiner, unten bündig (Rand Elfenbein). */
-const FACES = { start: { x: 0.545, y0: 0.24, y1: 0.34 }, end: { x: 0.54, y0: 0.15, y1: 0.29, shrink: true } };
+ *  Motiv-Box in Bildanteilen (start: Tor mit Sonne bis Schultern des Paars, Rückansicht); start: Bild füllt die Breite, oben Himmelfarbe; end: notfalls kleiner, unten bündig (Rand Elfenbein). */
+const FACES = { start: { x: 0.5, y0: 0.17, y1: 0.45 }, end: { x: 0.54, y0: 0.15, y1: 0.29, shrink: true } };
 function fitScene() {
   for (const k of ['start', 'end']) {
     const scr = $('#screen-' + k), f = FACES[k];
@@ -172,6 +173,7 @@ async function openCard(k, from) {
     sound.click();
     await tapWait(host.querySelector('.cf-stage'), 650);   // zweiter Tipp: irgendwo auf Karte oder Hinweis
     setStep('open');
+    notify('card', { k, title: C.title });
     cardEl.removeAttribute('role'); cardEl.removeAttribute('aria-label'); cardEl.tabIndex = -1;
     host.classList.add('flipped');
     setTimeout(sound.bell, 80);
@@ -214,6 +216,7 @@ async function run() {
       await say(first ? `<p>${INTRO}</p><p class="b-ask">${READY.first}</p>` : `<p class="b-ask">${fin ? READY.last : READY.next}</p>`, first ? READY.go : READY.yes, first ? 'intro' : 'ready');
       if (gone()) return;
       setStep('quiz');
+      if (first) notify('start', { ar: !!stage.isAr });
     }
     if (step() === 'quiz' && state.solved.includes(k)) setStep('card');   // Reload kurz nach der richtigen Antwort: nicht nochmal fragen
     if (step() === 'quiz') {
@@ -310,6 +313,7 @@ function showEnd() {
   const paint = () => ($('#end-list').innerHTML = list.map((s, k) => `<li>${stationBadge(k)}<span class="p-name">${s.name}</span></li>`).join(''));
   paint(); Promise.all(list.map((s) => iconImg(s.theme))).then(paint);
   show('end');
+  notify('end');
   sound.fanfare();
   confetti(180);
   endTimers = [1, 2, 3, 4, 5].map((k) => setTimeout(() => confetti(90), k * 1800));
