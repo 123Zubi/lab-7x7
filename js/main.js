@@ -625,7 +625,8 @@ async function setupOffline() {
     const appKey = (await caches.keys()).find((k) => k.startsWith('hl-app-'));   // nur eigene Caches prüfen (gleicher Origin wie andere Apps)
     const app = appKey && await caches.open(appKey);
     const ok = app && await Promise.all([...CDN_URLS.map((u) => cdn.match(u)), ...['targets.mind', 'index.html', 'assets/target.jpg'].map((u) => app.match(new URL(u, location.href).href, { ignoreSearch: true }))]);
-    if (ok && ok.every(Boolean)) $('#offline-ok').hidden = false;
+    const offlineEl = document.querySelector('#offline-ok');   // Anzeige entfernt; Prüfung bleibt, Element fehlt bewusst
+    if (offlineEl && ok && ok.every(Boolean)) offlineEl.hidden = false;
   } catch (e) { console.warn('Offline-Hilfe nicht verfügbar:', e); }
 }
 

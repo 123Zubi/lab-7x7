@@ -102,8 +102,10 @@ export const GUIDE = {
   tipsTitle: 'Gut zu wissen',
   tips: [
     { text: 'Legt das Brett auf einen Tisch, schön hell, aber so, dass es nicht zu stark spiegelt.' },
-    { text: 'Haltet das Handy ruhig und eher von oben über das Brett.', ar: true },
-    { text: 'Antworten könnt ihr per Button geben oder indem ihr den passenden Farbpunkt auf dem Brett im Bild antippt.' },
+    { text: 'Haltet zu Beginn das ganze Spielbrett ins Kamerabild und wartet kurz, bis eure Spielfiguren erscheinen – danach könnt ihr auch näher ran.', ar: true },
+    { text: 'Haltet das Handy ruhig und eher schräg von oben über das Brett.', ar: true },
+    { text: 'Ihr könnt auch mit einem iPad spielen – dort seht ihr Brett und Fragen größer.' },
+    { text: 'Antworten könnt ihr per Button geben oder indem ihr den passenden Farbpunkt auf dem Brett im Bild antippt.', ar: true },
     { text: 'Ein 50:50-Joker hilft euch einmal pro Spiel.' },
   ],
   warn: 'Hebt erst ein Plättchen an, wenn die App es euch sagt.',

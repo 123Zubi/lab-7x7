@@ -162,6 +162,31 @@ export async function createFallbackStage(container) {
     if (anyTap) { container.removeEventListener('click', anyTap); anyTap = null; }
     if (cardDone) { const d = cardDone; cardDone = null; d(); }
   }
+  // Icon über Truhe und Paar: Burst-Unterkante 0,1 Feldbreiten über deren Oberkante (0,95 Feld über der Feldmitte, inkl.
+  // Schweben der Truhe und Jubel-Hüpfer). Stösst es oben an die Bühne (HUD), bleibt es oben und weicht seitlich aus:
+  // neben die Truhe auf die Seite ohne Paar, sonst hinter das Paar (Richtung Brettmitte). In Feldbreiten ab Feldmitte, y nach unten.
+  function placeIcon() {
+    if (!card) return;
+    const L = layer.getBoundingClientRect(), C = container.getBoundingClientRect(), u = L.width / 7;
+    if (!u) return;
+    const [r, c] = card.dataset.pos.split(',').map(Number), dc = Math.sign(4 - c) || 1;
+    const fx = L.left + (c - 0.5) * u, fy = L.top + (r - 0.5) * u;
+    const R = 0.86 * u, TOP = 0.95 * u, M = 6;   // R: Burst-Radius (1,05 Feld × 1,54 / 2, mit Schwebe-Zoom 1,06)
+    let x = fx, y = fy - TOP - 0.1 * u - R;
+    const minY = C.top + M + R + 0.13 * u;        // + Schweben nach oben (12 % der Icongrösse)
+    const fits = (v) => v - R >= C.left + M && v + R <= C.right - M;
+    if (y < minY) {
+      y = minY;
+      if (y + R > fy - TOP) {                      // überdeckt sonst Truhe/Paar: zur Seite
+        const outer = fx - dc * (0.6 * u + R), inner = fx + dc * (1.72 * u + R);
+        x = fits(outer) ? outer : inner;
+      }
+    }
+    x = Math.min(Math.max(x, C.left + M + R), C.right - M - R);
+    const b = card.querySelector('.fb-ticon');
+    b.style.setProperty('--ix', Math.round(x - fx) + 'px');
+    b.style.setProperty('--iy', Math.round(y - fy) + 'px');
+  }
   function showCard(r, c, { icon = null, theme } = {}) {
     hideChest(); hideCard();
     paintMarks();
@@ -171,8 +196,10 @@ export async function createFallbackStage(container) {
       <button class="fb-ticon" aria-label="Schatz antippen"><span class="fb-ticon-in badge${icon ? ' has-img' : ''}">${icon ? `<img src="${icon}" alt="" draggable="false">` : ICONS[k]}</span></button>`;
     for (let j = 0; j < 10; j++) { const sp = el('span', 'spark'); sp.style.setProperty('--a', j * 36 + 'deg'); card.append(sp); }
     at(card, [r, c]);
+    card.dataset.pos = r + ',' + c;
     layer.append(card);
     stepAside();
+    placeIcon();
     cheerT = setTimeout(cheer, 700);   // das Paar „öffnet“ die Truhe
     return new Promise((res) => {
       const me = card;
@@ -194,6 +221,7 @@ export async function createFallbackStage(container) {
     board.style.width = w + 'px';
     board.style.height = h + 'px';
     layer.style.setProperty('--cell', layer.clientWidth / 7 + 'px');
+    placeIcon();
   };
   const ro = new ResizeObserver(fit);
   ro.observe(container);

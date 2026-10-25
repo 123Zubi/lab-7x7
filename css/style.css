@@ -410,8 +410,9 @@ body .resume .guide-inner { margin: auto; padding-top: 22px; width: 100%; text-a
 .fb-treasure .ring { inset: -20%; }
 .fb-treasure .spark { animation-delay: 1.5s; }
 .fb-ticon {
-  position: absolute; left: 50%; top: 18%; width: calc(var(--cell) * 1.05); aspect-ratio: 1; padding: 0; border: 0; background: none; cursor: pointer;
-  pointer-events: auto; transform: translate(-50%, -95%); animation: iconrise 1s var(--ease) 1.7s both;
+  /* Lage setzt fallback.js (placeIcon): --ix/--iy = Icon-Mitte ab Feldmitte, über Truhe und Paar bzw. seitlich daneben */
+  position: absolute; left: calc(50% + var(--ix, 0px)); top: calc(50% + var(--iy, -1.9 * var(--cell))); width: calc(var(--cell) * 1.05); aspect-ratio: 1; padding: 0; border: 0; background: none; cursor: pointer;
+  pointer-events: auto; transform: translate(-50%, -50%); animation: iconrise 1s var(--ease) 1.7s both;
 }
 /* Comic-Burst hinter dem Icon (Senfgelb, Outline), statt Goldglanz */
 .fb-ticon-in::before, .fb-ticon-in::after { content: ""; position: absolute; z-index: -1; clip-path: var(--burst); animation: burst 9s linear infinite; }
@@ -419,7 +420,7 @@ body .resume .guide-inner { margin: auto; padding-top: 22px; width: 100%; text-a
 .fb-ticon-in::after { inset: -20%; background: var(--mustard); }   /* Füllung, darüber das Icon */
 @keyframes burst { to { transform: rotate(360deg); } }
 .fb-ticon::after { content: ""; position: absolute; inset: -35%; border-radius: 50%; } /* große Tippfläche */
-@keyframes iconrise { from { opacity: 0; transform: translate(-50%, 40%) scale(.25); } }
+@keyframes iconrise { from { opacity: 0; transform: translate(calc(-50% - var(--ix, 0px)), calc(-50% - var(--iy, 0px))) scale(.25); } }   /* steigt aus der Truhe */
 .fb-ticon-in { position: relative; isolation: isolate; width: 100%; height: 100%; animation: iconfloat 2.2s ease-in-out 2.7s infinite; }
 .fb-ticon-in img { position: relative; width: 108%; height: 108%; margin: -4%; object-fit: contain; filter: drop-shadow(2px 2px 0 var(--ink)); }
 @keyframes iconfloat { 50% { transform: translateY(-12%) scale(1.06); } }

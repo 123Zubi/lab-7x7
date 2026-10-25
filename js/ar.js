@@ -371,7 +371,9 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   // Runde 5: 1,6 statt 2 Feldbreiten hoch (kürzerer Hebelarm: Drehfehler des Trackings bewegen das Icon weniger).
   // Comic-Runde: Durchmesser 2,9 statt 2,4 Feldbreiten, 1,8 hoch (Unterkante bleibt über der Truhe); keepOnScreen hält es im Bild.
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const ICON_R = cell * 1.45, ICON_UP = cell * 1.8, ICON_IN = 0.35, TAP_S = 1.5;
+  // Runde „Icon höher“ (25.10.): 3,4 statt 1,8 hoch. Offene Truhe (Deckel auf) und Paar-Kopf reichen ≈ 1 Feldbreite über das Feld,
+  // die Icon-Unterkante (Burst/Schriftzug, 1,36–1,39 R ≈ 2 Felder unter der Mitte) liegt so ≈ 1 Feldbreite darüber.
+  const ICON_R = cell * 1.45, ICON_UP = cell * 3.4, ICON_IN = 0.35, TAP_S = 1.5;
   // Eigene, stärkere Glättung der Icon-Position in Weltkoordinaten (= Kamerakoordinaten, die MindAR-Kamera steht still).
   const iconFilter = makePoseSmoother(THREE, { minCF: 0.55, beta: 25, dCF: 1, ...iconSmooth });
   const vIcon = new THREE.Vector3();
@@ -546,8 +548,11 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
   const hideChest = () => hideCard(true);
   const qUp = new THREE.Quaternion(), qCam = new THREE.Quaternion(), vC = new THREE.Vector3(), vE = new THREE.Vector3();
   /** Ragt das Billboard (Ring seitlich/oben, Schriftzug unten) aus dem Bild, entlang der Bildschirmachsen hereinschieben. */
-  function keepOnScreen(ig) {
-    const cam = sceneEl.camera, R = ICON_R * 1.3;   // Burst-Spitzen (bis 1,36 R, meist weniger)
+  // obs: Oberkanten von Truhe (offen) und Paar-Kopf in `up`-Koordinaten. Liegen sie im Bild unter dem Icon, wird es auf dem
+  // Bildschirm so weit hochgeschoben, dass seine Unterkante darüber bleibt (wirkt v. a. steil von oben; flach/schräg reicht die Höhe).
+  const vO = new THREE.Vector3(), vObsC = new THREE.Vector3(), vObsP = new THREE.Vector3();
+  function keepOnScreen(ig, obs) {
+    const cam = sceneEl.camera, R = ICON_R * 1.42;  // Burst-Spitzen samt Outline (Ring-Ebene 1,4 R)
     ig.updateMatrixWorld();
     ig.localToWorld(vC.set(0, 0, 0)).project(cam);
     ig.localToWorld(vE.set(R, 0, 0)).project(cam);
@@ -556,9 +561,24 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
     // Nah dran (Brett füllt das Bild) wird das Icon sonst bildschirmfüllend: Burst höchstens 40 % der kurzen Bildseite als Radius
     const maxRx = 0.8 * Math.min(1, 1 / cam.aspect);   // NDC: Breite = 2
     if (rx > maxRx) { ig.scale.multiplyScalar(maxRx / rx); rx = maxRx; }
-    const ry = rx * cam.aspect, bottom = ry * 1.15;    // NDC-y ist um das Seitenverhältnis gestreckt; Schriftzug reicht 1,36 R tief
-    const dx = Math.max(0, -1 - (vC.x - rx)) - Math.max(0, vC.x + rx - 1);
-    const dy = Math.max(0, -1 - (vC.y - bottom)) - Math.max(0, vC.y + ry - 1);
+    let ry = rx * cam.aspect;                           // NDC-y ist um das Seitenverhältnis gestreckt; Schriftzug reicht 1,36 R tief
+    // Oben aus dem Bild (schräg von oben, Icon schwebt hoch): erst bis 20 % kleiner, dann hereinschieben
+    if (vC.y + ry > 1) { const f = Math.max(0.8, (1 - vC.y) / ry); ig.scale.multiplyScalar(f); rx *= f; ry *= f; }
+    const bottom = ry * 1.15;
+    let lift = 0, oL = 1, oR = -1;
+    for (const o of obs) {
+      up.localToWorld(vO.copy(o)).project(cam);
+      const need = vO.y + ry * 0.12 - (vC.y - bottom);
+      if (Math.abs(vO.z) <= 1 && Math.abs(vO.x - vC.x) < rx * 1.1 && need > 0) { lift = Math.max(lift, need); oL = Math.min(oL, vO.x); oR = Math.max(oR, vO.x); }
+    }
+    const capped = Math.max(0, vC.y + lift + ry - 1);   // oben bleibt es im Bild (Rand geht vor) …
+    let x = vC.x;
+    if (capped > 0) {                                   // … dann seitlich neben Truhe/Paar ausweichen, auf die Seite mit Platz
+      const right = oR + rx * 1.1, left = oL - rx * 1.1;
+      x = vC.x >= (oL + oR) / 2 ? (right + rx <= 1 ? right : left) : (left - rx >= -1 ? left : right);
+    }
+    const dx = x - vC.x + Math.max(0, -1 - (x - rx)) - Math.max(0, x + rx - 1);
+    const dy = Math.max(0, -1 - (vC.y - bottom)) - capped + lift;
     if (dx || dy) { ig.translateX((dx / rx) * R * ig.scale.x); ig.translateY((dy / ry) * R * ig.scale.y); }
   }
   function animTreasure() {
@@ -605,7 +625,7 @@ export async function buildBoard({ sceneEl, anchor, aspect = 1, debug = false, i
           up.getWorldQuaternion(qUp).invert().multiply(sceneEl.camera.getWorldQuaternion(qCam));
           if (Number.isFinite(qUp.x + qUp.w)) {
             ig.quaternion.copy(qUp);
-            keepOnScreen(ig);
+            keepOnScreen(ig, [vObsC.set(g.position.x, top + cell * 0.45, g.position.z), vObsP.set(pos.x, pos.y + COUPLE_H * 1.05, pos.z)]);
             // Position in Weltkoordinaten glätten: Drehfehler des Bretts wirken über den Hebelarm (Icon schwebt hoch) verstärkt
             up.localToWorld(vIcon.copy(ig.position));
             if (Number.isFinite(vIcon.x + vIcon.y + vIcon.z)) up.worldToLocal(ig.position.copy(iconFilter.filter(vIcon, null, dtLast).pos));
