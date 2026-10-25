@@ -8,7 +8,7 @@ import { STATIONS, FINALE, DOTS } from './content.js';
 import { isDebug, state } from './state.js';
 import { ROUTE, BOARD_IMAGE } from './route.js';
 
-const STEP_MS = 320, FRAME_MS = 180;
+const STEP_MS = 458, FRAME_MS = 250;   // 0,7x Tempo (vorher 320 / 180 ms)
 // Sprites aus Spielfiguren/Chibi-Hochzeitspaar-Spritebogen.png (docs/ASSETS.md): gleiche Leinwand, Füsse an der Unterkante.
 const POSES = ['steht', 'laeuft-1', 'laeuft-2', 'jubelt', 'hinten'];
 const PAD_X = 16, PAD_TOP = 30, PAD_BOTTOM = 2;
